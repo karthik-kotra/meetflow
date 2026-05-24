@@ -47,7 +47,13 @@ function ContactRow({ contact, isActive, lastMessage, onClick, currentUser }) {
           </AvatarFallback>
         </Avatar>
         {contact.online && (
-          <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-emerald-400 border-2 border-background" />
+          <span className={cn(
+            "absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border-2 border-background",
+            contact.status === 'online' && 'bg-emerald-400',
+            contact.status === 'away' && 'bg-amber-400',
+            contact.status === 'in-meeting' && 'bg-violet-500',
+            contact.status === 'offline' && 'bg-muted-foreground'
+          )} />
         )}
       </div>
 
@@ -62,7 +68,14 @@ function ContactRow({ contact, isActive, lastMessage, onClick, currentUser }) {
             </span>
           )}
         </div>
-        <p className="text-xs text-muted-foreground truncate mt-0.5">{preview}</p>
+        <div className="flex items-center justify-between gap-2 mt-0.5">
+          <p className="text-xs text-muted-foreground truncate flex-1">{preview}</p>
+          {contact.unreadCount > 0 && !isActive && (
+            <span className="bg-primary text-primary-foreground text-[10px] font-bold px-1.5 py-0.5 rounded-full shrink-0 animate-bounce">
+              {contact.unreadCount}
+            </span>
+          )}
+        </div>
       </div>
     </button>
   )
@@ -88,8 +101,9 @@ function ChatBubble({ msg, isMe, senderName }) {
       >
         {msg.text}
         <span
+          title={format(new Date(msg.createdAt || msg.ts), 'PPPP, h:mm:ss a')}
           className={cn(
-            'text-[10px] block mt-1 opacity-60 leading-none',
+            'text-[10px] block mt-1 opacity-60 leading-none cursor-help select-none selection:bg-transparent',
             isMe ? 'text-right' : 'text-left'
           )}
         >
@@ -117,11 +131,22 @@ function EmptyState() {
 }
 
 export default function ChatPage() {
-  const { contacts, activeContactId, setActiveContactId, getMessages, sendMessage, getLastMessage, currentUser } = useChat()
+  const { 
+    contacts, 
+    activeContactId, 
+    setActiveContactId, 
+    getMessages, 
+    sendMessage, 
+    getLastMessage, 
+    currentUser,
+    typingUsers,
+    sendTyping
+  } = useChat()
   const [search, setSearch] = useState('')
   const [draft, setDraft] = useState('')
   const messagesEndRef = useRef(null)
   const inputRef = useRef(null)
+  const typingTimeoutRef = useRef(null)
 
   const activeContact = contacts.find((c) => c.id === activeContactId)
   const msgs = activeContactId ? getMessages(activeContactId) : []
@@ -139,10 +164,44 @@ export default function ChatPage() {
     if (activeContactId) inputRef.current?.focus()
   }, [activeContactId])
 
+  // Stop typing on active chat change or unmount
+  useEffect(() => {
+    return () => {
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current)
+      }
+    }
+  }, [activeContactId])
+
+  const handleInputChange = (e) => {
+    setDraft(e.target.value)
+
+    if (!activeContactId) return
+
+    // Notify backend typing has started
+    sendTyping(activeContactId, true)
+
+    // Debounce the stop_typing event
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current)
+    }
+
+    typingTimeoutRef.current = setTimeout(() => {
+      sendTyping(activeContactId, false)
+    }, 2000)
+  }
+
   const handleSend = () => {
     const text = draft.trim()
     if (!text || !activeContactId) return
     sendMessage(activeContactId, text)
+    
+    // Reset typing status immediately
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current)
+    }
+    sendTyping(activeContactId, false)
+    
     setDraft('')
   }
 
@@ -151,6 +210,56 @@ export default function ChatPage() {
       e.preventDefault()
       handleSend()
     }
+  }
+
+  const renderMessages = () => {
+    if (msgs.length === 0) {
+      return (
+        <div className="flex flex-col items-center justify-center h-full gap-2 text-center my-auto">
+          <p className="text-muted-foreground text-sm">No messages yet. Say hello! 👋</p>
+        </div>
+      )
+    }
+
+    const elements = []
+    let lastDateLabel = null
+
+    msgs.forEach((msg, idx) => {
+      const msgDate = new Date(msg.createdAt || msg.ts)
+      let dateLabel = ''
+      
+      if (isToday(msgDate)) {
+        dateLabel = 'Today'
+      } else if (isYesterday(msgDate)) {
+        dateLabel = 'Yesterday'
+      } else {
+        dateLabel = format(msgDate, 'MMMM d, yyyy')
+      }
+
+      if (dateLabel !== lastDateLabel) {
+        elements.push(
+          <div key={`date-sep-${dateLabel}-${idx}`} className="flex items-center justify-center my-6 animate-fade-in">
+            <div className="h-[1px] bg-border flex-grow" />
+            <span className="text-[10px] tracking-wider uppercase text-muted-foreground font-display font-bold px-3 py-1 bg-secondary/80 rounded-full border border-border">
+              {dateLabel}
+            </span>
+            <div className="h-[1px] bg-border flex-grow" />
+          </div>
+        )
+        lastDateLabel = dateLabel
+      }
+
+      elements.push(
+        <ChatBubble
+          key={msg._id || msg.id}
+          msg={msg}
+          isMe={msg.senderId === currentUser.id}
+          senderName={activeContact.name}
+        />
+      )
+    })
+
+    return elements
   }
 
   return (
@@ -212,7 +321,13 @@ export default function ChatPage() {
                   </AvatarFallback>
                 </Avatar>
                 {activeContact.online && (
-                  <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-emerald-400 border-2 border-background" />
+                  <span className={cn(
+                    "absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border-2 border-background",
+                    activeContact.status === 'online' && 'bg-emerald-400',
+                    activeContact.status === 'away' && 'bg-amber-400',
+                    activeContact.status === 'in-meeting' && 'bg-violet-500',
+                    activeContact.status === 'offline' && 'bg-muted-foreground'
+                  )} />
                 )}
               </div>
               <div>
@@ -220,11 +335,20 @@ export default function ChatPage() {
                 <p className="text-xs flex items-center gap-1.5 text-muted-foreground">
                   {activeContact.online ? (
                     <>
-                      <Circle size={7} className="fill-emerald-400 text-emerald-400" />
-                      Online · {activeContact.role}
+                      <Circle 
+                        size={7} 
+                        className={cn(
+                          "fill-current border-none",
+                          activeContact.status === 'online' && 'text-emerald-400',
+                          activeContact.status === 'away' && 'text-amber-400',
+                          activeContact.status === 'in-meeting' && 'text-violet-500',
+                          activeContact.status === 'offline' && 'text-muted-foreground'
+                        )} 
+                      />
+                      <span className="capitalize">{activeContact.status}</span> · {activeContact.role}
                     </>
                   ) : (
-                    <>{activeContact.role}</>
+                    <>{activeContact.role} · Offline</>
                   )}
                 </p>
               </div>
@@ -232,20 +356,24 @@ export default function ChatPage() {
 
             {/* Messages */}
             <div className="flex-1 overflow-y-auto px-6 py-6 space-y-4">
-              {msgs.length === 0 ? (
-                <div className="flex flex-col items-center justify-center h-full gap-2 text-center">
-                  <p className="text-muted-foreground text-sm">No messages yet. Say hello! 👋</p>
+              {renderMessages()}
+              
+              {/* Typing indicator bubble */}
+              {typingUsers[activeContactId] && (
+                <div className="flex items-end gap-2 animate-fade-in">
+                  <Avatar className="h-7 w-7 shrink-0 mb-1">
+                    <AvatarFallback className="text-[10px] bg-secondary text-muted-foreground">
+                      {getInitials(activeContact.name)}
+                    </AvatarFallback>
+                  </Avatar>
+                  <div className="bg-card border border-border px-4 py-3 rounded-2xl rounded-bl-sm flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-primary/80 animate-bounce duration-300" style={{ animationDelay: '0ms' }} />
+                    <span className="w-1.5 h-1.5 rounded-full bg-primary/80 animate-bounce duration-300" style={{ animationDelay: '150ms' }} />
+                    <span className="w-1.5 h-1.5 rounded-full bg-primary/80 animate-bounce duration-300" style={{ animationDelay: '300ms' }} />
+                  </div>
                 </div>
-              ) : (
-                msgs.map((msg) => (
-                  <ChatBubble
-                    key={msg._id || msg.id}
-                    msg={msg}
-                    isMe={msg.senderId === currentUser.id}
-                    senderName={activeContact.name}
-                  />
-                ))
               )}
+              
               <div ref={messagesEndRef} />
             </div>
 
@@ -255,7 +383,7 @@ export default function ChatPage() {
                 <input
                   ref={inputRef}
                   value={draft}
-                  onChange={(e) => setDraft(e.target.value)}
+                  onChange={handleInputChange}
                   onKeyDown={handleKeyDown}
                   placeholder={`Message ${activeContact.name}…`}
                   className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground outline-none"

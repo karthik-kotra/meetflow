@@ -14,13 +14,16 @@ import CreateMeetingPage from '@/pages/CreateMeetingPage'
 import MeetingRoomPage from '@/pages/MeetingRoomPage'
 import ProfilePage from '@/pages/ProfilePage'
 import ChatPage from '@/pages/ChatPage'
+import WorkspacePage from '@/pages/WorkspacePage'
+import { WorkspaceProvider } from '@/context/WorkspaceContext'
 
 export default function App() {
   return (
     <AuthProvider>
       <MeetingsProvider>
         <ChatProvider>
-          <BrowserRouter>
+          <WorkspaceProvider>
+            <BrowserRouter>
             <Routes>
               {/* Public */}
               <Route path="/login" element={<LoginPage />} />
@@ -39,6 +42,8 @@ export default function App() {
                 <Route path="/meetings" element={<MeetingsPage />} />
                 <Route path="/create-meeting" element={<CreateMeetingPage />} />
                 <Route path="/chat" element={<ChatPage />} />
+                <Route path="/workspaces" element={<WorkspacePage />} />
+                <Route path="/workspace/:id" element={<WorkspacePage />} />
                 <Route path="/profile" element={<ProfilePage />} />
               </Route>
 
@@ -55,7 +60,8 @@ export default function App() {
               {/* Fallback */}
               <Route path="*" element={<Navigate to="/login" replace />} />
             </Routes>
-          </BrowserRouter>
+            </BrowserRouter>
+          </WorkspaceProvider>
         </ChatProvider>
       </MeetingsProvider>
     </AuthProvider>

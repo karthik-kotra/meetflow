@@ -26,6 +26,15 @@ const userSchema = new mongoose.Schema({
     enum: ['user', 'admin'],
     default: 'user',
   },
+  status: {
+    type: String,
+    enum: ['online', 'offline', 'away', 'in-meeting'],
+    default: 'offline',
+  },
+  lastSeen: {
+    type: Date,
+    default: Date.now,
+  },
   createdAt: {
     type: Date,
     default: Date.now,
