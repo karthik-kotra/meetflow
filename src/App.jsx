@@ -9,6 +9,7 @@ import LoginPage from '@/pages/LoginPage'
 import RegisterPage from '@/pages/RegisterPage'
 import Dashboard from '@/pages/Dashboard'
 import MeetingsPage from '@/pages/MeetingsPage'
+import OngoingMeetingsPage from '@/pages/OngoingMeetingsPage'
 import CreateMeetingPage from '@/pages/CreateMeetingPage'
 import MeetingRoomPage from '@/pages/MeetingRoomPage'
 import ProfilePage from '@/pages/ProfilePage'
@@ -34,6 +35,7 @@ export default function App() {
                 }
               >
                 <Route path="/dashboard" element={<Dashboard />} />
+                <Route path="/ongoing-meetings" element={<OngoingMeetingsPage />} />
                 <Route path="/meetings" element={<MeetingsPage />} />
                 <Route path="/create-meeting" element={<CreateMeetingPage />} />
                 <Route path="/chat" element={<ChatPage />} />

@@ -8,6 +8,7 @@ import {
   Video,
   ChevronRight,
   MessageSquare,
+  Zap,
 } from 'lucide-react'
 import { useAuth } from '@/context/AuthContext'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
@@ -17,6 +18,7 @@ import { cn } from '@/lib/utils'
 
 const navItems = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { to: '/ongoing-meetings', label: 'Ongoing Meetings', icon: Zap },
   { to: '/meetings', label: 'Meetings', icon: CalendarDays },
   { to: '/create-meeting', label: 'Create Meeting', icon: PlusCircle },
   { to: '/chat', label: 'Chat', icon: MessageSquare },
