@@ -10,6 +10,8 @@ const authRoutes = require('./routes/authRoutes');
 const userRoutes = require('./routes/userRoutes');
 const chatRoutes = require('./routes/chatRoutes');
 const Message = require('./models/Message');
+const User = require('./models/User');
+const workspaceRoutes = require('./routes/workspaceRoutes');
 
 // Load environment variables
 dotenv.config();
@@ -43,6 +45,7 @@ mongoose.connect(process.env.MONGO_URI)
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/chat', chatRoutes);
+app.use('/api/workspaces', workspaceRoutes);
 
 // Basic health check route
 app.get('/api/health', (req, res) => {
@@ -56,9 +59,17 @@ io.on('connection', (socket) => {
   console.log(`Socket Connected: ${socket.id}`);
 
   // User comes online
-  socket.on('register_user', (userId) => {
+  socket.on('register_user', async (userId) => {
     onlineUsers.set(userId, socket.id);
     io.emit('online_users', Array.from(onlineUsers.keys()));
+    
+    try {
+      const lastSeen = new Date();
+      await User.findByIdAndUpdate(userId, { status: 'online', lastSeen });
+      io.emit('status_changed', { userId, status: 'online', lastSeen });
+    } catch (err) {
+      console.error('Error registering user status:', err);
+    }
   });
 
   // Handle sending messages
@@ -87,13 +98,97 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Status manual update
+  socket.on('update_status', async ({ userId, status }) => {
+    try {
+      const lastSeen = new Date();
+      await User.findByIdAndUpdate(userId, { status, lastSeen });
+      io.emit('status_changed', { userId, status, lastSeen });
+    } catch (err) {
+      console.error('Error updating status:', err);
+    }
+  });
+
+  // Typing indicators
+  socket.on('typing', ({ senderId, receiverId }) => {
+    const receiverSocketId = onlineUsers.get(receiverId);
+    if (receiverSocketId) {
+      io.to(receiverSocketId).emit('typing', { senderId, receiverId });
+    }
+  });
+
+  socket.on('stop_typing', ({ senderId, receiverId }) => {
+    const receiverSocketId = onlineUsers.get(receiverId);
+    if (receiverSocketId) {
+      io.to(receiverSocketId).emit('stop_typing', { senderId, receiverId });
+    }
+  });
+
+  // Mark read event
+  socket.on('mark_read', async ({ senderId, receiverId }) => {
+    try {
+      await Message.updateMany(
+         { senderId, receiverId, read: false },
+         { $set: { read: true } }
+      );
+    } catch (err) {
+      console.error('Error marking messages as read:', err);
+    }
+  });
+
+  // Workspace Rooms joining
+  socket.on('join_workspace', ({ workspaceId }) => {
+    socket.join(`workspace_${workspaceId}`);
+    console.log(`Socket ${socket.id} joined workspace room: workspace_${workspaceId}`);
+  });
+
+  // Workspace Chat Message routing
+  socket.on('send_workspace_message', async ({ workspaceId, channelId, senderId, senderName, text }) => {
+    try {
+      const WorkspaceMessage = require('./models/WorkspaceMessage');
+      const newMessage = await WorkspaceMessage.create({
+        workspaceId,
+        channelId,
+        senderId,
+        senderName,
+        text
+      });
+      io.to(`workspace_${workspaceId}`).emit('workspace_message_received', newMessage);
+    } catch (err) {
+      console.error('Error sending workspace message:', err);
+    }
+  });
+
+  // Workspace Kanban Task synchronization
+  socket.on('update_workspace_task', ({ workspaceId, task }) => {
+    io.to(`workspace_${workspaceId}`).emit('workspace_task_synced', task);
+  });
+
+  // Workspace Collaborative Notes sync
+  socket.on('edit_workspace_notes', ({ workspaceId, content, senderId }) => {
+    socket.to(`workspace_${workspaceId}`).emit('workspace_notes_synced', { content, lastUpdatedBy: senderId });
+  });
+
+  // Workspace Channel creation sync
+  socket.on('create_channel', ({ workspaceId, workspace }) => {
+    io.to(`workspace_${workspaceId}`).emit('workspace_updated', workspace);
+  });
+
   // User disconnects
-  socket.on('disconnect', () => {
+  socket.on('disconnect', async () => {
     console.log(`Socket Disconnected: ${socket.id}`);
     for (const [userId, socketId] of onlineUsers.entries()) {
       if (socketId === socket.id) {
         onlineUsers.delete(userId);
         io.emit('online_users', Array.from(onlineUsers.keys()));
+        
+        try {
+          const lastSeen = new Date();
+          await User.findByIdAndUpdate(userId, { status: 'offline', lastSeen });
+          io.emit('status_changed', { userId, status: 'offline', lastSeen });
+        } catch (err) {
+          console.error('Error disconnecting user status:', err);
+        }
         break;
       }
     }

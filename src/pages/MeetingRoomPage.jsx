@@ -7,6 +7,7 @@ import {
 } from 'lucide-react'
 import { useMeetings } from '@/context/MeetingsContext'
 import { useAuth } from '@/context/AuthContext'
+import { useChat } from '@/context/ChatContext'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
@@ -18,6 +19,7 @@ export default function MeetingRoomPage() {
   const { id } = useParams()
   const { getMeeting } = useMeetings()
   const { user } = useAuth()
+  const { updateStatus } = useChat() || {}
   const navigate = useNavigate()
   const meeting = getMeeting(id)
 
@@ -28,6 +30,17 @@ export default function MeetingRoomPage() {
   const [tab, setTab] = useState('info') // 'info' | 'people' | 'chat'
   const [elapsed, setElapsed] = useState(0)
   const [joined, setJoined] = useState(false)
+
+  useEffect(() => {
+    if (joined) {
+      updateStatus?.('in-meeting')
+    } else {
+      updateStatus?.('online')
+    }
+    return () => {
+      updateStatus?.('online')
+    }
+  }, [joined, updateStatus])
 
   useEffect(() => {
     if (!joined) return
