@@ -8,7 +8,7 @@ import { useState } from 'react'
 
 function OngoingMeetingCard({ meeting, onJoin, joinedMeetingId }) {
   const date = parseISO(`${meeting.date}T${meeting.time}`)
-  const isJoined = joinedMeetingId === meeting.id
+  const isJoined = joinedMeetingId === (meeting._id || meeting.roomId)
 
   return (
     <div className="group bg-gradient-to-br from-primary/10 to-transparent border-2 border-primary/40 rounded-xl p-6 hover:border-primary/60 hover:shadow-lg hover:shadow-primary/20 transition-all duration-300 flex flex-col gap-4 animate-pulse-subtle">
@@ -36,7 +36,7 @@ function OngoingMeetingCard({ meeting, onJoin, joinedMeetingId }) {
         </span>
         <span className="flex items-center gap-2">
           <Users size={14} className="text-primary" />
-          {meeting.participants} participants
+          {Array.isArray(meeting.participants) ? meeting.participants.length : (meeting.participants || 0)} participants
         </span>
       </div>
 
@@ -45,7 +45,7 @@ function OngoingMeetingCard({ meeting, onJoin, joinedMeetingId }) {
         {isJoined ? (
           <Button
             className="flex-1 gap-2 bg-red-500 hover:bg-red-600"
-            onClick={() => onJoin(meeting.id)}
+            onClick={() => onJoin(meeting._id || meeting.roomId)}
           >
             <PhoneOff size={16} /> Leave Meeting
           </Button>
@@ -53,11 +53,11 @@ function OngoingMeetingCard({ meeting, onJoin, joinedMeetingId }) {
           <>
             <Button
               className="flex-1 gap-2 bg-primary hover:bg-primary/90"
-              onClick={() => onJoin(meeting.id)}
+              onClick={() => onJoin(meeting._id || meeting.roomId)}
             >
               <Phone size={16} /> Join Now
             </Button>
-            <Link to={`/meeting/${meeting.id}`}>
+            <Link to={`/meeting/${meeting.roomId || meeting._id}`}>
               <Button variant="outline" className="gap-2">
                 <ArrowRight size={14} />
               </Button>
@@ -126,7 +126,7 @@ export default function OngoingMeetingsPage() {
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
           {sortedOngoingMeetings.map((meeting, i) => (
             <div
-              key={meeting.id}
+              key={meeting._id || meeting.roomId}
               style={{ animationDelay: `${i * 100}ms` }}
             >
               <OngoingMeetingCard

@@ -1,0 +1,183 @@
+const mongoose = require('mongoose');
+const Meeting = require('../models/Meeting');
+
+// Helper to generate a unique 3-3-3 room code (e.g. abc-defg-hij)
+const generateUniqueRoomId = async () => {
+  const chars = 'abcdefghijklmnopqrstuvwxyz';
+  const part = (len) => Array.from({ length: len }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+  let roomId;
+  let exists = true;
+  
+  while (exists) {
+    roomId = `${part(3)}-${part(4)}-${part(3)}`;
+    const duplicate = await Meeting.findOne({ roomId });
+    if (!duplicate) {
+      exists = false;
+    }
+  }
+  return roomId;
+};
+
+// @desc    Create a new meeting
+// @route   POST /api/meetings
+// @access  Private
+exports.createMeeting = async (req, res) => {
+  try {
+    const { title, description, date, time, isPrivate } = req.body;
+
+    const roomId = await generateUniqueRoomId();
+
+    const meeting = await Meeting.create({
+      title,
+      description,
+      date,
+      time,
+      isPrivate: !!isPrivate,
+      host: req.user._id,
+      roomId,
+      participants: [req.user._id],
+    });
+
+    const populatedMeeting = await Meeting.findById(meeting._id).populate('host', 'name email');
+
+    // Send a system-wide notification to other users about the new meeting
+    try {
+      const User = require('../models/User');
+      const Notification = require('../models/Notification');
+      const otherUsers = await User.find({ _id: { $ne: req.user._id } });
+      
+      const io = req.app.get('io');
+      const onlineUsers = req.app.get('onlineUsers');
+      
+      for (const u of otherUsers) {
+        const newMeetNotification = await Notification.create({
+          recipient: u._id,
+          sender: req.user._id,
+          senderName: req.user.name,
+          type: 'meeting_invite',
+          title: 'New Meeting Scheduled',
+          message: `${req.user.name} created a new meeting: "${title}" scheduled for ${date} at ${time}.`,
+          relatedId: meeting._id,
+          relatedModel: 'Meeting'
+        });
+        
+        if (io && onlineUsers) {
+          const receiverSockets = onlineUsers.get(u._id.toString());
+          if (receiverSockets) {
+            for (const socketId of receiverSockets) {
+              io.to(socketId).emit('new_notification', newMeetNotification);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Error generating system meeting notifications:', err);
+    }
+
+    res.status(201).json(populatedMeeting);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+};
+
+// @desc    Get all meetings
+// @route   GET /api/meetings
+// @access  Private
+exports.getMeetings = async (req, res) => {
+  try {
+    const meetings = await Meeting.find()
+      .populate('host', 'name email')
+      .sort({ date: 1, time: 1 }); // Sort chronologically
+    res.status(200).json(meetings);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+};
+
+// @desc    Get meeting by MongoDB ID or unique room code
+// @route   GET /api/meetings/:id
+// @access  Private
+exports.getMeetingByIdOrRoomId = async (req, res) => {
+  try {
+    const identifier = req.params.id;
+
+    // Build query checking if valid ObjectId, else check roomId
+    const query = mongoose.isValidObjectId(identifier)
+      ? { _id: identifier }
+      : { roomId: identifier };
+
+    const meeting = await Meeting.findOne(query).populate('host', 'name email');
+
+    if (!meeting) {
+      return res.status(404).json({ message: 'Meeting not found' });
+    }
+
+    // Auto-update to ongoing if scheduled time has passed and it is still 'upcoming'
+    if (meeting.status === 'upcoming') {
+      try {
+        const meetingDateTime = new Date(`${meeting.date}T${meeting.time}`);
+        if (meetingDateTime <= new Date()) {
+          meeting.status = 'ongoing';
+          await meeting.save();
+          console.log(`Auto-updated meeting ${meeting.roomId} to ongoing because schedule time arrived.`);
+        }
+      } catch (err) {
+        console.error('Error auto-updating meeting status:', err);
+      }
+    }
+
+    res.status(200).json(meeting);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+};
+
+// @desc    Update meeting status
+// @route   PATCH /api/meetings/:id/status
+// @access  Private
+exports.updateMeetingStatus = async (req, res) => {
+  try {
+    const { status } = req.body;
+    
+    if (!['upcoming', 'ongoing', 'completed'].includes(status)) {
+      return res.status(400).json({ message: 'Invalid meeting status' });
+    }
+
+    const meeting = await Meeting.findById(req.params.id);
+
+    if (!meeting) {
+      return res.status(404).json({ message: 'Meeting not found' });
+    }
+
+    // Only host can update meeting status
+    if (meeting.host.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Not authorized to modify this meeting' });
+    }
+
+    meeting.status = status;
+    await meeting.save();
+
+    const updatedMeeting = await Meeting.findById(meeting._id).populate('host', 'name email');
+    res.status(200).json(updatedMeeting);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+};
+
+// @desc    Delete meeting
+// @route   DELETE /api/meetings/:id
+// @access  Private
+exports.deleteMeeting = async (req, res) => {
+  try {
+    const meeting = await Meeting.findById(req.params.id);
+
+    if (!meeting) {
+      return res.status(404).json({ message: 'Meeting not found' });
+    }
+
+    await meeting.deleteOne();
+    res.status(200).json({ message: 'Meeting deleted successfully', id: req.params.id });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+};

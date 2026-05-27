@@ -203,6 +203,34 @@ exports.createWorkspaceTask = async (req, res) => {
       dueDate: dueDate || null
     });
 
+    if (assigneeId && assigneeId.toString() !== req.user._id.toString()) {
+      try {
+        const Notification = require('../models/Notification');
+        const assignedTaskNotification = await Notification.create({
+          recipient: assigneeId,
+          sender: req.user._id,
+          senderName: req.user.name,
+          type: 'task_assigned',
+          title: 'New Task Assigned',
+          message: `${req.user.name} assigned you the task: "${title}"`,
+          relatedId: newTask._id,
+          relatedModel: 'WorkspaceTask'
+        });
+        const io = req.app.get('io');
+        const onlineUsers = req.app.get('onlineUsers');
+        if (io && onlineUsers) {
+          const receiverSockets = onlineUsers.get(assigneeId.toString());
+          if (receiverSockets) {
+            for (const socketId of receiverSockets) {
+              io.to(socketId).emit('new_notification', assignedTaskNotification);
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Error creating task assignment notification:', err);
+      }
+    }
+
     const populated = await WorkspaceTask.findById(newTask._id).populate('assignee', 'name email status');
 
     res.status(201).json(populated);
@@ -223,6 +251,8 @@ exports.updateWorkspaceTask = async (req, res) => {
       return res.status(404).json({ message: 'Task not found' });
     }
 
+    const oldAssignee = task.assignee ? task.assignee.toString() : null;
+
     if (title !== undefined) task.title = title;
     if (description !== undefined) task.description = description;
     if (status !== undefined) task.status = status;
@@ -231,6 +261,35 @@ exports.updateWorkspaceTask = async (req, res) => {
     if (dueDate !== undefined) task.dueDate = dueDate || null;
 
     await task.save();
+
+    const newAssignee = task.assignee ? task.assignee.toString() : null;
+    if (newAssignee && newAssignee !== oldAssignee && newAssignee !== req.user._id.toString()) {
+      try {
+        const Notification = require('../models/Notification');
+        const assignedTaskNotification = await Notification.create({
+          recipient: newAssignee,
+          sender: req.user._id,
+          senderName: req.user.name,
+          type: 'task_assigned',
+          title: 'Task Assigned to You',
+          message: `${req.user.name} assigned you the task: "${task.title}"`,
+          relatedId: task._id,
+          relatedModel: 'WorkspaceTask'
+        });
+        const io = req.app.get('io');
+        const onlineUsers = req.app.get('onlineUsers');
+        if (io && onlineUsers) {
+          const receiverSockets = onlineUsers.get(newAssignee);
+          if (receiverSockets) {
+            for (const socketId of receiverSockets) {
+              io.to(socketId).emit('new_notification', assignedTaskNotification);
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Error creating task assignment update notification:', err);
+      }
+    }
 
     const populated = await WorkspaceTask.findById(task._id).populate('assignee', 'name email status');
 
