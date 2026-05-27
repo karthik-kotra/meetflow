@@ -11,7 +11,12 @@ const userRoutes = require('./routes/userRoutes');
 const chatRoutes = require('./routes/chatRoutes');
 const Message = require('./models/Message');
 const User = require('./models/User');
+const Meeting = require('./models/Meeting');
+const MeetingMessage = require('./models/MeetingMessage');
 const workspaceRoutes = require('./routes/workspaceRoutes');
+const meetingRoutes = require('./routes/meetingRoutes');
+const meetingChatRoutes = require('./routes/meetingChatRoutes');
+const notificationRoutes = require('./routes/notificationRoutes');
 
 // Load environment variables
 dotenv.config();
@@ -27,6 +32,10 @@ const io = new Server(server, {
     credentials: true,
   },
 });
+
+const onlineUsers = new Map(); // Map of userId -> socketId
+app.set('io', io);
+app.set('onlineUsers', onlineUsers);
 
 // Middleware
 app.use(cors({
@@ -46,6 +55,9 @@ app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/workspaces', workspaceRoutes);
+app.use('/api/meetings', meetingRoutes);
+app.use('/api/meeting-chat', meetingChatRoutes);
+app.use('/api/notifications', notificationRoutes);
 
 // Basic health check route
 app.get('/api/health', (req, res) => {
@@ -53,14 +65,17 @@ app.get('/api/health', (req, res) => {
 });
 
 // Socket.io Logic
-const onlineUsers = new Map(); // Map of userId -> socketId
+const meetingRooms = new Map(); // Map of roomId -> Map of socketId -> { userId, name, mic, cam }
 
 io.on('connection', (socket) => {
   console.log(`Socket Connected: ${socket.id}`);
 
   // User comes online
   socket.on('register_user', async (userId) => {
-    onlineUsers.set(userId, socket.id);
+    if (!onlineUsers.has(userId)) {
+      onlineUsers.set(userId, new Set());
+    }
+    onlineUsers.get(userId).add(socket.id);
     io.emit('online_users', Array.from(onlineUsers.keys()));
     
     try {
@@ -85,13 +100,22 @@ io.on('connection', (socket) => {
       });
 
       // Send to the receiver if they are online
-      const receiverSocketId = onlineUsers.get(receiverId);
-      if (receiverSocketId) {
-        io.to(receiverSocketId).emit('receiveMessage', newMessage);
+      const receiverSockets = onlineUsers.get(receiverId);
+      if (receiverSockets) {
+        for (const socketId of receiverSockets) {
+          io.to(socketId).emit('receiveMessage', newMessage);
+        }
       }
       
-      // Also send it back to the sender so their UI updates with the actual DB record
-      socket.emit('receiveMessage', newMessage);
+      // Send back to the sender's sockets so all active tabs of the sender sync
+      const senderSockets = onlineUsers.get(senderId);
+      if (senderSockets) {
+        for (const socketId of senderSockets) {
+          io.to(socketId).emit('receiveMessage', newMessage);
+        }
+      } else {
+        socket.emit('receiveMessage', newMessage);
+      }
       
     } catch (err) {
       console.error('Error saving message:', err);
@@ -111,16 +135,20 @@ io.on('connection', (socket) => {
 
   // Typing indicators
   socket.on('typing', ({ senderId, receiverId }) => {
-    const receiverSocketId = onlineUsers.get(receiverId);
-    if (receiverSocketId) {
-      io.to(receiverSocketId).emit('typing', { senderId, receiverId });
+    const receiverSockets = onlineUsers.get(receiverId);
+    if (receiverSockets) {
+      for (const socketId of receiverSockets) {
+        io.to(socketId).emit('typing', { senderId, receiverId });
+      }
     }
   });
 
   socket.on('stop_typing', ({ senderId, receiverId }) => {
-    const receiverSocketId = onlineUsers.get(receiverId);
-    if (receiverSocketId) {
-      io.to(receiverSocketId).emit('stop_typing', { senderId, receiverId });
+    const receiverSockets = onlineUsers.get(receiverId);
+    if (receiverSockets) {
+      for (const socketId of receiverSockets) {
+        io.to(socketId).emit('stop_typing', { senderId, receiverId });
+      }
     }
   });
 
@@ -154,6 +182,38 @@ io.on('connection', (socket) => {
         text
       });
       io.to(`workspace_${workspaceId}`).emit('workspace_message_received', newMessage);
+
+      // Parse user mentions in workspace chat
+      const Workspace = require('./models/Workspace');
+      const workspace = await Workspace.findById(workspaceId).populate('members.user');
+      if (workspace) {
+        for (const member of workspace.members) {
+          const memberUser = member.user;
+          if (memberUser && memberUser._id.toString() !== senderId.toString()) {
+            const name = memberUser.name;
+            const mentionRegex = new RegExp(`@${name.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')}`, 'i');
+            if (mentionRegex.test(text)) {
+              const Notification = require('./models/Notification');
+              const mentionNotification = await Notification.create({
+                recipient: memberUser._id,
+                sender: senderId,
+                senderName,
+                type: 'mention',
+                title: 'Mentioned in Chat',
+                message: `${senderName} mentioned you in workspace chat: "${text.substring(0, 50)}${text.length > 50 ? '...' : ''}"`,
+                relatedId: workspaceId,
+                relatedModel: 'Workspace'
+              });
+              const receiverSockets = onlineUsers.get(memberUser._id.toString());
+              if (receiverSockets) {
+                for (const socketId of receiverSockets) {
+                  io.to(socketId).emit('new_notification', mentionNotification);
+                }
+              }
+            }
+          }
+        }
+      }
     } catch (err) {
       console.error('Error sending workspace message:', err);
     }
@@ -174,20 +234,236 @@ io.on('connection', (socket) => {
     io.to(`workspace_${workspaceId}`).emit('workspace_updated', workspace);
   });
 
+  // --- WebRTC Video Call Signaling ---
+
+  // User joins a meeting room
+  socket.on('join_meeting', ({ roomId, userId, name, mic, cam }) => {
+    socket.join(`meeting_${roomId}`);
+    
+    if (!meetingRooms.has(roomId)) {
+      meetingRooms.set(roomId, new Map());
+    }
+    const roomParticipants = meetingRooms.get(roomId);
+    roomParticipants.set(socket.id, { userId, name, mic, cam });
+
+    console.log(`Socket ${socket.id} (${name}) joined meeting room: meeting_${roomId}`);
+
+    // Compile list of other participants already in the room
+    const otherParticipants = [];
+    for (const [sId, meta] of roomParticipants.entries()) {
+      if (sId !== socket.id) {
+        otherParticipants.push({
+          socketId: sId,
+          userId: meta.userId,
+          name: meta.name,
+          mic: meta.mic,
+          cam: meta.cam
+        });
+      }
+    }
+
+    // Send the list of existing participants to the joiner
+    socket.emit('room_participants', otherParticipants);
+
+    // Broadcast user joined event to other participants
+    socket.to(`meeting_${roomId}`).emit('peer_joined', {
+      socketId: socket.id,
+      userId,
+      name,
+      mic,
+      cam
+    });
+
+    // Save system message for join & broadcast to others
+    MeetingMessage.create({
+      roomId,
+      senderName: 'System',
+      text: `${name} joined the meeting`,
+      type: 'system'
+    }).then(msg => {
+      socket.to(`meeting_${roomId}`).emit('meeting_receive_message', msg);
+    }).catch(err => {
+      console.error('Error saving join system message:', err);
+    });
+  });
+
+  // Relay SDP offer to target peer
+  socket.on('send_offer', ({ targetSocketId, offer, senderName, senderId }) => {
+    io.to(targetSocketId).emit('receive_offer', {
+      senderSocketId: socket.id,
+      offer,
+      senderName,
+      senderId
+    });
+  });
+
+  // Relay SDP answer to target peer
+  socket.on('send_answer', ({ targetSocketId, answer }) => {
+    io.to(targetSocketId).emit('receive_answer', {
+      senderSocketId: socket.id,
+      answer
+    });
+  });
+
+  // Relay ICE candidate to target peer
+  socket.on('send_ice_candidate', ({ targetSocketId, candidate }) => {
+    io.to(targetSocketId).emit('receive_ice_candidate', {
+      senderSocketId: socket.id,
+      candidate
+    });
+  });
+
+  // Broadcast mic/cam status toggles
+  socket.on('toggle_media', ({ roomId, type, enabled }) => {
+    const roomParticipants = meetingRooms.get(roomId);
+    if (roomParticipants && roomParticipants.has(socket.id)) {
+      const meta = roomParticipants.get(socket.id);
+      if (type === 'audio') meta.mic = enabled;
+      if (type === 'video') meta.cam = enabled;
+    }
+    socket.to(`meeting_${roomId}`).emit('peer_media_toggled', {
+      socketId: socket.id,
+      type,
+      enabled
+    });
+  });
+
+  // User leaves a meeting room cleanly
+  socket.on('leave_meeting', async ({ roomId }) => {
+    const roomParticipants = meetingRooms.get(roomId);
+    if (roomParticipants && roomParticipants.has(socket.id)) {
+      const meta = roomParticipants.get(socket.id);
+      const name = meta.name;
+
+      // Save system message for leave & broadcast
+      MeetingMessage.create({
+        roomId,
+        senderName: 'System',
+        text: `${name} left the meeting`,
+        type: 'system'
+      }).then(msg => {
+        socket.to(`meeting_${roomId}`).emit('meeting_receive_message', msg);
+      }).catch(err => {
+        console.error('Error saving leave system message:', err);
+      });
+
+      roomParticipants.delete(socket.id);
+      if (roomParticipants.size === 0) {
+        meetingRooms.delete(roomId);
+        try {
+          await Meeting.findOneAndUpdate(
+            { roomId: roomId },
+            { status: 'completed' }
+          );
+          console.log(`Meeting room ${roomId} is empty. Status cleanly updated to completed.`);
+        } catch (err) {
+          console.error(`Failed to mark meeting ${roomId} as completed:`, err);
+        }
+      }
+    }
+    socket.leave(`meeting_${roomId}`);
+    socket.to(`meeting_${roomId}`).emit('peer_left', {
+      socketId: socket.id
+    });
+    console.log(`Socket ${socket.id} cleanly left meeting room: meeting_${roomId}`);
+  });
+
+  // --- In-Meeting Collaboration socket handlers ---
+  socket.on('meeting_send_message', async ({ roomId, senderId, senderName, text }) => {
+    try {
+      const newMessage = await MeetingMessage.create({
+        roomId,
+        senderId,
+        senderName,
+        text,
+        type: 'message'
+      });
+      io.to(`meeting_${roomId}`).emit('meeting_receive_message', newMessage);
+    } catch (err) {
+      console.error('Error saving meeting message:', err);
+    }
+  });
+
+  socket.on('meeting_typing', ({ roomId, userId, userName }) => {
+    socket.to(`meeting_${roomId}`).emit('meeting_user_typing', { userId, userName });
+  });
+
+  socket.on('meeting_stop_typing', ({ roomId, userId }) => {
+    socket.to(`meeting_${roomId}`).emit('meeting_user_stop_typing', { userId });
+  });
+
+  socket.on('meeting_reaction', ({ roomId, emoji, senderName }) => {
+    io.to(`meeting_${roomId}`).emit('meeting_reaction_received', { emoji, senderName, id: Math.random().toString(36).substr(2, 9) });
+  });
+
+  socket.on('meeting_raise_hand', ({ roomId, userId, userName }) => {
+    io.to(`meeting_${roomId}`).emit('meeting_hand_raised', { userId, userName });
+  });
+
+  socket.on('meeting_lower_hand', ({ roomId, userId, userName }) => {
+    io.to(`meeting_${roomId}`).emit('meeting_hand_lowered', { userId, userName });
+  });
+
+  socket.on('meeting_update_notes', ({ roomId, content, senderId }) => {
+    socket.to(`meeting_${roomId}`).emit('meeting_notes_synced', { content, lastUpdatedBy: senderId });
+  });
+
   // User disconnects
   socket.on('disconnect', async () => {
     console.log(`Socket Disconnected: ${socket.id}`);
-    for (const [userId, socketId] of onlineUsers.entries()) {
-      if (socketId === socket.id) {
-        onlineUsers.delete(userId);
-        io.emit('online_users', Array.from(onlineUsers.keys()));
-        
-        try {
-          const lastSeen = new Date();
-          await User.findByIdAndUpdate(userId, { status: 'offline', lastSeen });
-          io.emit('status_changed', { userId, status: 'offline', lastSeen });
-        } catch (err) {
-          console.error('Error disconnecting user status:', err);
+    
+    // Cleanup video calling rooms
+    for (const [roomId, roomParticipants] of meetingRooms.entries()) {
+      if (roomParticipants.has(socket.id)) {
+        const meta = roomParticipants.get(socket.id);
+        const name = meta ? meta.name : 'Participant';
+
+        // Save system message for leave & broadcast
+        MeetingMessage.create({
+          roomId,
+          senderName: 'System',
+          text: `${name} left the meeting`,
+          type: 'system'
+        }).then(msg => {
+          socket.to(`meeting_${roomId}`).emit('meeting_receive_message', msg);
+        }).catch(err => {
+          console.error('Error saving disconnect system message:', err);
+        });
+
+        roomParticipants.delete(socket.id);
+        socket.to(`meeting_${roomId}`).emit('peer_left', {
+          socketId: socket.id
+        });
+        if (roomParticipants.size === 0) {
+          meetingRooms.delete(roomId);
+          try {
+            await Meeting.findOneAndUpdate(
+              { roomId: roomId },
+              { status: 'completed' }
+            );
+            console.log(`Disconnected clean up: meeting ${roomId} marked completed.`);
+          } catch (err) {
+            console.error(`Failed to mark meeting ${roomId} as completed on disconnect:`, err);
+          }
+        }
+        console.log(`Cleaned up disconnected socket ${socket.id} from meeting room: meeting_${roomId}`);
+      }
+    }
+
+    for (const [userId, socketIds] of onlineUsers.entries()) {
+      if (socketIds.has(socket.id)) {
+        socketIds.delete(socket.id);
+        if (socketIds.size === 0) {
+          onlineUsers.delete(userId);
+          io.emit('online_users', Array.from(onlineUsers.keys()));
+          
+          try {
+            const lastSeen = new Date();
+            await User.findByIdAndUpdate(userId, { status: 'offline', lastSeen });
+            io.emit('status_changed', { userId, status: 'offline', lastSeen });
+          } catch (err) {
+            console.error('Error disconnecting user status:', err);
+          }
         }
         break;
       }

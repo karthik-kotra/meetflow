@@ -2,13 +2,11 @@ import { NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard,
   CalendarDays,
-  PlusCircle,
   User,
   LogOut,
   Video,
   ChevronRight,
   MessageSquare,
-  Zap,
   Briefcase,
 } from 'lucide-react'
 import { useAuth } from '@/context/AuthContext'
@@ -18,13 +16,12 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
 import { cn } from '@/lib/utils'
+import NotificationBell from '@/components/NotificationBell'
 
 const navItems = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/workspaces', label: 'Workspaces', icon: Briefcase },
-  { to: '/ongoing-meetings', label: 'Ongoing Meetings', icon: Zap },
   { to: '/meetings', label: 'Meetings', icon: CalendarDays },
-  { to: '/create-meeting', label: 'Create Meeting', icon: PlusCircle },
   { to: '/chat', label: 'Chat', icon: MessageSquare },
   { to: '/profile', label: 'Profile', icon: User },
 ]
@@ -46,14 +43,17 @@ export default function Sidebar() {
 
   return (
     <aside className="flex flex-col w-64 h-screen bg-card border-r border-border fixed left-0 top-0 z-40">
-      {/* Logo */}
-      <div className="flex items-center gap-3 px-6 py-5 border-b border-border">
-        <div className="flex items-center justify-center w-9 h-9 rounded-lg bg-primary/15 border border-primary/30">
-          <Video className="w-4.5 h-4.5 text-primary" size={18} />
+      {/* Logo & Notification Bell */}
+      <div className="flex items-center justify-between px-6 py-5 border-b border-border">
+        <div className="flex items-center gap-3">
+          <div className="flex items-center justify-center w-9 h-9 rounded-lg bg-primary/15 border border-primary/30">
+            <Video className="w-4.5 h-4.5 text-primary" size={18} />
+          </div>
+          <span className="font-display font-700 text-lg tracking-tight text-foreground">
+            Meet<span className="text-primary">Flow</span>
+          </span>
         </div>
-        <span className="font-display font-700 text-lg tracking-tight text-foreground">
-          Meet<span className="text-primary">Flow</span>
-        </span>
+        <NotificationBell />
       </div>
 
       {/* Navigation */}

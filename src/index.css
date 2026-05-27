@@ -74,3 +74,22 @@
 .glow-primary {
   box-shadow: 0 0 40px -8px hsl(var(--primary) / 0.4);
 }
+
+@keyframes floatUp {
+  0% {
+    transform: translate(-50%, 0) scale(0.5);
+    opacity: 0;
+  }
+  15% {
+    transform: translate(-50%, -60px) scale(1.1);
+    opacity: 1;
+  }
+  80% {
+    transform: translate(-50%, -200px) scale(1);
+    opacity: 0.8;
+  }
+  100% {
+    transform: translate(-50%, -300px) scale(0.8);
+    opacity: 0;
+  }
+}

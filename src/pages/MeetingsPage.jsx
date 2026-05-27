@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useState, useEffect } from 'react'
+import { Link, useLocation } from 'react-router-dom'
 import { CalendarDays, Clock, Users, Plus, Search, Video, ArrowRight, Trash2 } from 'lucide-react'
 import { useMeetings } from '@/context/MeetingsContext'
 import { Button } from '@/components/ui/button'
@@ -10,13 +10,32 @@ import { format, parseISO } from 'date-fns'
 export default function MeetingsPage() {
   const { meetings, deleteMeeting } = useMeetings()
   const [search, setSearch] = useState('')
-  const [filter, setFilter] = useState('all')
+  
+  const location = useLocation()
+  const queryParams = new URLSearchParams(location.search)
+  const initialFilter = queryParams.get('filter') || 'all'
+  const [filter, setFilter] = useState(initialFilter)
+
+  // Sync state when query parameter changes
+  useEffect(() => {
+    const newFilter = new URLSearchParams(location.search).get('filter') || 'all'
+    setFilter(newFilter)
+  }, [location.search])
 
   const filtered = meetings.filter((m) => {
+    const title = m.title || ''
+    const description = m.description || ''
     const matchSearch =
-      m.title.toLowerCase().includes(search.toLowerCase()) ||
-      m.description.toLowerCase().includes(search.toLowerCase())
-    const matchFilter = filter === 'all' || m.status === filter
+      title.toLowerCase().includes(search.toLowerCase()) ||
+      description.toLowerCase().includes(search.toLowerCase())
+    
+    let matchFilter = true
+    if (filter === 'upcoming') {
+      matchFilter = m.status === 'upcoming' || m.status === 'ongoing'
+    } else if (filter === 'completed') {
+      matchFilter = m.status === 'completed'
+    }
+
     return matchSearch && matchFilter
   })
 
@@ -75,10 +94,19 @@ export default function MeetingsPage() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           {filtered.map((meeting, i) => {
-            const date = parseISO(`${meeting.date}T${meeting.time}`)
+            let dateLabel = 'Invalid Date'
+            try {
+              if (meeting.date && meeting.time) {
+                const parsedDate = parseISO(`${meeting.date}T${meeting.time}`)
+                dateLabel = format(parsedDate, 'MMM d, yyyy')
+              }
+            } catch (err) {
+              console.error('Date parsing failed:', err)
+            }
+            const meetingId = meeting._id || meeting.roomId;
             return (
               <div
-                key={meeting.id}
+                key={meetingId}
                 className="group bg-card border border-border rounded-xl p-5 hover:border-primary/40 transition-all duration-200 flex flex-col gap-4 animate-fade-in"
                 style={{ animationDelay: `${i * 50}ms` }}
               >
@@ -102,7 +130,7 @@ export default function MeetingsPage() {
                 <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">
                   <span className="flex items-center gap-1.5">
                     <CalendarDays size={12} className="text-primary/60" />
-                    {format(date, 'MMM d, yyyy')}
+                    {dateLabel}
                   </span>
                   <span className="flex items-center gap-1.5">
                     <Clock size={12} className="text-primary/60" />
@@ -110,13 +138,13 @@ export default function MeetingsPage() {
                   </span>
                   <span className="flex items-center gap-1.5">
                     <Users size={12} className="text-primary/60" />
-                    {meeting.participants} participants
+                    {Array.isArray(meeting.participants) ? meeting.participants.length : (meeting.participants || 0)} participants
                   </span>
                 </div>
 
                 {/* Actions */}
                 <div className="flex gap-2 pt-1 border-t border-border">
-                  <Link to={`/meeting/${meeting.id}`} className="flex-1">
+                  <Link to={`/meeting/${meeting.roomId || meeting._id}`} className="flex-1">
                     <Button size="sm" variant="outline" className="w-full gap-1.5 text-xs">
                       Open <ArrowRight size={12} />
                     </Button>
@@ -125,7 +153,7 @@ export default function MeetingsPage() {
                     size="sm"
                     variant="ghost"
                     className="text-muted-foreground hover:text-destructive hover:bg-destructive/10"
-                    onClick={() => deleteMeeting(meeting.id)}
+                    onClick={() => deleteMeeting(meeting._id || meeting.id)}
                   >
                     <Trash2 size={14} />
                   </Button>

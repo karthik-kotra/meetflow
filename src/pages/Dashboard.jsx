@@ -1,9 +1,10 @@
-import { Link } from 'react-router-dom'
-import { CalendarDays, Clock, Users, Plus, ArrowRight, Video, Zap, Phone } from 'lucide-react'
+import { Link, useNavigate } from 'react-router-dom'
+import { CalendarDays, Clock, Users, Plus, ArrowRight, Video, Zap, Phone, Link2 } from 'lucide-react'
 import { useAuth } from '@/context/AuthContext'
 import { useMeetings } from '@/context/MeetingsContext'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Input } from '@/components/ui/input'
 import { format, parseISO, isToday, isTomorrow, isPast } from 'date-fns'
 import { useState } from 'react'
 
@@ -32,10 +33,10 @@ function MeetingCard({ meeting }) {
         <div className="flex items-center gap-4 mt-2 text-xs text-muted-foreground">
           <span className="flex items-center gap-1"><CalendarDays size={12} />{dateLabel}</span>
           <span className="flex items-center gap-1"><Clock size={12} />{meeting.time}</span>
-          <span className="flex items-center gap-1"><Users size={12} />{meeting.participants}</span>
+          <span className="flex items-center gap-1"><Users size={12} />{Array.isArray(meeting.participants) ? meeting.participants.length : (meeting.participants || 0)}</span>
         </div>
       </div>
-      <Link to={`/meeting/${meeting.id}`}>
+      <Link to={`/meeting/${meeting.roomId || meeting._id}`}>
         <Button size="sm" variant="ghost" className="opacity-0 group-hover:opacity-100 shrink-0 transition-opacity">
           <ArrowRight size={14} />
         </Button>
@@ -48,6 +49,8 @@ export default function Dashboard() {
   const { user } = useAuth()
   const { meetings, ongoingMeetings, upcomingMeetings } = useMeetings()
   const [joinedMeetingId, setJoinedMeetingId] = useState(null)
+  const [roomCodeInput, setRoomCodeInput] = useState('')
+  const navigate = useNavigate()
 
   const completed = meetings.filter((m) => m.status === 'completed')
 
@@ -106,6 +109,45 @@ export default function Dashboard() {
         ))}
       </div>
 
+      {/* Join with Code Card */}
+      <div className="bg-card border border-border rounded-xl p-5 flex flex-col md:flex-row items-center justify-between gap-4 shadow-sm hover:border-primary/20 transition-all duration-200">
+        <div className="space-y-1 flex items-start gap-3">
+          <div className="flex items-center justify-center w-10 h-10 rounded-lg bg-primary/10 border border-primary/25 shrink-0 text-primary">
+            <Link2 size={16} />
+          </div>
+          <div>
+            <h3 className="font-display font-semibold text-sm text-foreground">Join with a Room Code</h3>
+            <p className="text-xs text-muted-foreground mt-0.5">Pasted an invite link or got a code? Enter it below to hop right in.</p>
+          </div>
+        </div>
+        <form 
+          onSubmit={(e) => {
+            e.preventDefault()
+            if (!roomCodeInput.trim()) return
+            let code = roomCodeInput.trim()
+            try {
+              if (code.includes('/meeting/')) {
+                code = code.split('/meeting/')[1].split('?')[0]
+              }
+            } catch (err) {}
+            if (code) {
+              navigate(`/meeting/${code}`)
+            }
+          }} 
+          className="flex gap-2 w-full md:w-auto max-w-md shrink-0"
+        >
+          <Input
+            placeholder="e.g. pqc-lugp-rqw"
+            value={roomCodeInput}
+            onChange={(e) => setRoomCodeInput(e.target.value)}
+            className="text-xs w-full md:w-56"
+          />
+          <Button type="submit" size="sm" className="gap-1.5 font-semibold text-xs px-4">
+            Join Room
+          </Button>
+        </form>
+      </div>
+
       {/* Ongoing meetings */}
       {ongoingMeetings.length > 0 && (
         <div>
@@ -123,9 +165,10 @@ export default function Dashboard() {
           <div className="space-y-3">
             {sortedOngoingMeetings.slice(0, 3).map((m) => {
               const date = parseISO(`${m.date}T${m.time}`)
-              const isJoined = joinedMeetingId === m.id
+              const meetingId = m._id || m.roomId
+              const isJoined = joinedMeetingId === meetingId
               return (
-                <div key={m.id} className="group bg-gradient-to-r from-primary/10 to-transparent border-2 border-primary/40 rounded-xl p-4 hover:border-primary/60 transition-all duration-200 flex items-start gap-4">
+                <div key={meetingId} className="group bg-gradient-to-r from-primary/10 to-transparent border-2 border-primary/40 rounded-xl p-4 hover:border-primary/60 transition-all duration-200 flex items-start gap-4">
                   <div className="flex items-center justify-center w-11 h-11 rounded-lg bg-primary/20 border border-primary/40 shrink-0">
                     <Video size={18} className="text-primary animate-pulse" />
                   </div>
@@ -139,18 +182,18 @@ export default function Dashboard() {
                     <p className="text-xs text-muted-foreground mt-1 line-clamp-1">{m.description}</p>
                     <div className="flex items-center gap-4 mt-2 text-xs text-muted-foreground">
                       <span className="flex items-center gap-1"><Clock size={12} />{format(date, 'h:mm a')}</span>
-                      <span className="flex items-center gap-1"><Users size={12} />{m.participants} participants</span>
+                      <span className="flex items-center gap-1"><Users size={12} />{Array.isArray(m.participants) ? m.participants.length : (m.participants || 0)} participants</span>
                     </div>
                   </div>
                   <div className="flex gap-2 shrink-0">
                     <Button 
                       size="sm" 
                       className={isJoined ? "gap-2 bg-red-500 hover:bg-red-600" : "gap-2 bg-primary hover:bg-primary/90"}
-                      onClick={() => handleJoinMeeting(m.id)}
+                      onClick={() => handleJoinMeeting(meetingId)}
                     >
                       <Phone size={14} /> {isJoined ? "Leave" : "Join"}
                     </Button>
-                    <Link to={`/meeting/${m.id}`}>
+                    <Link to={`/meeting/${meetingId}`}>
                       <Button size="sm" variant="outline">
                         <ArrowRight size={14} />
                       </Button>
@@ -184,7 +227,7 @@ export default function Dashboard() {
         ) : (
           <div className="space-y-3">
             {upcomingMeetings.slice(0, 4).map((m) => (
-              <MeetingCard key={m.id} meeting={m} />
+              <MeetingCard key={m._id || m.roomId} meeting={m} />
             ))}
           </div>
         )}
@@ -196,7 +239,7 @@ export default function Dashboard() {
           <h2 className="font-display font-semibold text-foreground mb-4">Recent Meetings</h2>
           <div className="space-y-3">
             {completed.slice(0, 2).map((m) => (
-              <MeetingCard key={m.id} meeting={m} />
+              <MeetingCard key={m._id || m.roomId} meeting={m} />
             ))}
           </div>
         </div>

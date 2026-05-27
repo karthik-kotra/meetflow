@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { CalendarDays, Clock, FileText, Type, CheckCircle2 } from 'lucide-react'
+import { CalendarDays, Clock, FileText, Type, CheckCircle2, Lock } from 'lucide-react'
 import { useMeetings } from '@/context/MeetingsContext'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -17,6 +17,7 @@ export default function CreateMeetingPage() {
     description: '',
     date: '',
     time: '',
+    isPrivate: false,
   })
   const [errors, setErrors] = useState({})
 
@@ -34,17 +35,28 @@ export default function CreateMeetingPage() {
     if (Object.keys(errs).length) { setErrors(errs); return }
     setErrors({})
     setLoading(true)
-    await new Promise((r) => setTimeout(r, 700))
-    const meeting = createMeeting(form)
+    const meeting = await createMeeting(form)
     setLoading(false)
-    setSuccess(true)
-    await new Promise((r) => setTimeout(r, 1200))
-    navigate(`/meeting/${meeting.id}`)
+    if (meeting) {
+      setSuccess(true)
+      await new Promise((r) => setTimeout(r, 1200))
+      
+      const meetingDateTime = new Date(`${form.date}T${form.time}`)
+      const isFuture = meetingDateTime > new Date()
+      
+      if (isFuture) {
+        navigate('/meetings?filter=upcoming')
+      } else {
+        navigate(`/meeting/${meeting.roomId}`)
+      }
+    }
   }
 
   const set = (key) => (e) => setForm({ ...form, [key]: e.target.value })
 
   const today = new Date().toISOString().split('T')[0]
+  const meetingDateTime = form.date && form.time ? new Date(`${form.date}T${form.time}`) : null
+  const isFuture = meetingDateTime ? meetingDateTime > new Date() : false
 
   if (success) {
     return (
@@ -53,7 +65,9 @@ export default function CreateMeetingPage() {
           <CheckCircle2 size={36} className="text-primary" />
         </div>
         <h2 className="font-display font-bold text-2xl text-foreground">Meeting created!</h2>
-        <p className="text-muted-foreground mt-1.5">Redirecting to meeting room…</p>
+        <p className="text-muted-foreground mt-1.5">
+          {isFuture ? 'Redirecting to scheduled upcoming meetings…' : 'Redirecting to meeting room…'}
+        </p>
       </div>
     )
   }
@@ -151,10 +165,36 @@ export default function CreateMeetingPage() {
           </div>
         </div>
 
+        {/* Room Privacy Option */}
+        <div className="bg-card border border-border rounded-xl p-6 space-y-5">
+          <h2 className="font-display font-semibold text-foreground flex items-center gap-2 text-sm">
+            <Lock size={15} className="text-primary" />
+            Privacy Options
+          </h2>
+          <div className="flex items-center space-x-3 p-4 bg-secondary/15 rounded-xl border border-border/40 hover:border-border transition-all">
+            <input
+              id="isPrivate"
+              type="checkbox"
+              className="h-4 w-4 rounded border-border bg-background text-primary focus:ring-primary accent-primary cursor-pointer"
+              checked={form.isPrivate}
+              onChange={(e) => setForm({ ...form, isPrivate: e.target.checked })}
+            />
+            <div className="space-y-0.5 cursor-pointer select-none flex-1" onClick={() => setForm({ ...form, isPrivate: !form.isPrivate })}>
+              <Label htmlFor="isPrivate" className="text-sm font-semibold text-foreground cursor-pointer">Private Meeting Room</Label>
+              <p className="text-xs text-muted-foreground mt-0.5">If checked, only invited users can access and join this meeting room.</p>
+            </div>
+          </div>
+        </div>
+
         {/* Preview card */}
         {(form.title || form.date) && (
           <div className="bg-primary/5 border border-primary/25 rounded-xl p-4 space-y-1.5">
-            <p className="text-xs font-display font-semibold text-primary uppercase tracking-wide">Preview</p>
+            <div className="flex justify-between items-center">
+              <p className="text-xs font-display font-semibold text-primary uppercase tracking-wide">Preview</p>
+              <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border ${form.isPrivate ? 'bg-amber-500/10 text-amber-500 border-amber-500/25' : 'bg-emerald-500/10 text-emerald-500 border-emerald-500/25'}`}>
+                {form.isPrivate ? 'Private' : 'Public'}
+              </span>
+            </div>
             <p className="font-display font-semibold text-foreground">{form.title || 'Untitled Meeting'}</p>
             {form.description && (
               <p className="text-xs text-muted-foreground line-clamp-2">{form.description}</p>
