@@ -46,14 +46,45 @@ export function AuthProvider({ children }) {
     setUser(null)
   }
 
-  const updateProfile = (data) => {
-    const updated = { ...user, ...data }
+  const updateProfile = async (data) => {
+    const res = await fetch('/api/auth/profile', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+    const resData = await res.json()
+    if (!res.ok) throw new Error(resData.message || 'Failed to update profile')
+    
+    const updated = { ...user, name: resData.name, email: resData.email }
     localStorage.setItem('meetflow_user', JSON.stringify(updated))
     setUser(updated)
+    return resData
+  }
+
+  const updatePassword = async (currentPassword, newPassword) => {
+    const res = await fetch('/api/auth/password', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ currentPassword, newPassword }),
+    })
+    const resData = await res.json()
+    if (!res.ok) throw new Error(resData.message || 'Failed to update password')
+    return resData
+  }
+
+  const deleteAccount = async () => {
+    const res = await fetch('/api/auth/profile', {
+      method: 'DELETE',
+    })
+    const resData = await res.json()
+    if (!res.ok) throw new Error(resData.message || 'Failed to delete account')
+    
+    localStorage.removeItem('meetflow_user')
+    setUser(null)
   }
 
   return (
-    <AuthContext.Provider value={{ user, register, login, logout, updateProfile }}>
+    <AuthContext.Provider value={{ user, register, login, logout, updateProfile, updatePassword, deleteAccount }}>
       {children}
     </AuthContext.Provider>
   )

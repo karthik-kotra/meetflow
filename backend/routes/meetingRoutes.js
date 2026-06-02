@@ -5,6 +5,9 @@ const {
   getMeetingByIdOrRoomId,
   updateMeetingStatus,
   deleteMeeting,
+  updateMeetingNotes,
+  processMeetingAI,
+  summarizeMeetingChats,
 } = require('../controllers/meetingController');
 const { protect } = require('../middleware/authMiddleware');
 
@@ -20,5 +23,14 @@ router.route('/:id')
 
 router.route('/:id/status')
   .patch(protect, updateMeetingStatus);
+
+router.route('/:id/notes')
+  .patch(protect, updateMeetingNotes);
+
+router.route('/:id/process-ai')
+  .post(protect, processMeetingAI);
+
+router.route('/:id/summarize-chats')
+  .post(protect, summarizeMeetingChats);
 
 module.exports = router;

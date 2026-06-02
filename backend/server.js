@@ -116,6 +116,35 @@ io.on('connection', (socket) => {
       } else {
         socket.emit('receiveMessage', newMessage);
       }
+
+      // Parse user mentions in direct chat messages
+      try {
+        const sender = await User.findById(senderId);
+        const receiver = await User.findById(receiverId);
+        if (sender && receiver && receiverId.toString() !== senderId.toString()) {
+          const mentionRegex = new RegExp(`@${receiver.name.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')}`, 'i');
+          if (mentionRegex.test(text)) {
+            const Notification = require('./models/Notification');
+            const mentionNotification = await Notification.create({
+              recipient: receiverId,
+              sender: senderId,
+              senderName: sender.name,
+              type: 'mention',
+              title: 'Mentioned in Direct Chat',
+              message: `${sender.name} mentioned you in direct chat: "${text.substring(0, 50)}${text.length > 50 ? '...' : ''}"`,
+              relatedId: senderId,
+              relatedModel: 'User'
+            });
+            if (receiverSockets) {
+              for (const socketId of receiverSockets) {
+                io.to(socketId).emit('new_notification', mentionNotification);
+              }
+            }
+          }
+        }
+      } catch (mentionErr) {
+        console.error('Error handling direct chat mention parsing:', mentionErr);
+      }
       
     } catch (err) {
       console.error('Error saving message:', err);
@@ -224,6 +253,11 @@ io.on('connection', (socket) => {
     io.to(`workspace_${workspaceId}`).emit('workspace_task_synced', task);
   });
 
+  // Workspace Kanban Task deletion sync
+  socket.on('delete_workspace_task', ({ workspaceId, taskId }) => {
+    io.to(`workspace_${workspaceId}`).emit('workspace_task_deleted', taskId);
+  });
+
   // Workspace Collaborative Notes sync
   socket.on('edit_workspace_notes', ({ workspaceId, content, senderId }) => {
     socket.to(`workspace_${workspaceId}`).emit('workspace_notes_synced', { content, lastUpdatedBy: senderId });
@@ -234,11 +268,31 @@ io.on('connection', (socket) => {
     io.to(`workspace_${workspaceId}`).emit('workspace_updated', workspace);
   });
 
+  // Workspace Channel Typing Telemetry
+  socket.on('workspace_typing', ({ workspaceId, channelId, userId, userName }) => {
+    socket.to(`workspace_${workspaceId}`).emit('workspace_user_typing', { channelId, userId, userName });
+  });
+
+  socket.on('workspace_stop_typing', ({ workspaceId, channelId, userId }) => {
+    socket.to(`workspace_${workspaceId}`).emit('workspace_user_stop_typing', { channelId, userId });
+  });
+
   // --- WebRTC Video Call Signaling ---
 
   // User joins a meeting room
-  socket.on('join_meeting', ({ roomId, userId, name, mic, cam }) => {
+  socket.on('join_meeting', async ({ roomId, userId, name, mic, cam }) => {
     socket.join(`meeting_${roomId}`);
+    
+    // Add user to database participants array dynamically
+    try {
+      const Meeting = require('./models/Meeting');
+      await Meeting.updateOne(
+        { roomId },
+        { $addToSet: { participants: userId } }
+      );
+    } catch (err) {
+      console.error('Error adding participant to database meeting:', err);
+    }
     
     if (!meetingRooms.has(roomId)) {
       meetingRooms.set(roomId, new Map());
@@ -351,11 +405,18 @@ io.on('connection', (socket) => {
       if (roomParticipants.size === 0) {
         meetingRooms.delete(roomId);
         try {
-          await Meeting.findOneAndUpdate(
-            { roomId: roomId },
-            { status: 'completed' }
-          );
-          console.log(`Meeting room ${roomId} is empty. Status cleanly updated to completed.`);
+          const meeting = await Meeting.findOne({ roomId });
+          if (meeting && meeting.status !== 'completed') {
+            meeting.status = 'completed';
+            meeting.endedAt = new Date();
+            if (meeting.startedAt) {
+              meeting.duration = Math.round((meeting.endedAt - meeting.startedAt) / 1000);
+            } else {
+              meeting.duration = Math.round((meeting.endedAt - meeting.createdAt) / 1000);
+            }
+            await meeting.save();
+            console.log(`Meeting room ${roomId} is empty. Status cleanly updated to completed with duration ${meeting.duration}s.`);
+          }
         } catch (err) {
           console.error(`Failed to mark meeting ${roomId} as completed:`, err);
         }
@@ -404,8 +465,30 @@ io.on('connection', (socket) => {
     io.to(`meeting_${roomId}`).emit('meeting_hand_lowered', { userId, userName });
   });
 
-  socket.on('meeting_update_notes', ({ roomId, content, senderId }) => {
+  socket.on('meeting_update_notes', async ({ roomId, content, senderId }) => {
     socket.to(`meeting_${roomId}`).emit('meeting_notes_synced', { content, lastUpdatedBy: senderId });
+    try {
+      const Meeting = require('./models/Meeting');
+      await Meeting.updateOne({ roomId }, { notes: content });
+    } catch (err) {
+      console.error('Error auto-saving meeting notes:', err);
+    }
+  });
+
+  socket.on('meeting_transcription_segment', async ({ roomId, senderId, senderName, text }) => {
+    try {
+      const MeetingMessage = require('./models/MeetingMessage');
+      const segment = await MeetingMessage.create({
+        roomId,
+        senderId,
+        senderName,
+        text,
+        type: 'transcript'
+      });
+      io.to(`meeting_${roomId}`).emit('meeting_transcription_received', segment);
+    } catch (err) {
+      console.error('Error handling meeting transcription segment:', err);
+    }
   });
 
   // User disconnects
@@ -437,11 +520,18 @@ io.on('connection', (socket) => {
         if (roomParticipants.size === 0) {
           meetingRooms.delete(roomId);
           try {
-            await Meeting.findOneAndUpdate(
-              { roomId: roomId },
-              { status: 'completed' }
-            );
-            console.log(`Disconnected clean up: meeting ${roomId} marked completed.`);
+            const meeting = await Meeting.findOne({ roomId });
+            if (meeting && meeting.status !== 'completed') {
+              meeting.status = 'completed';
+              meeting.endedAt = new Date();
+              if (meeting.startedAt) {
+                meeting.duration = Math.round((meeting.endedAt - meeting.startedAt) / 1000);
+              } else {
+                meeting.duration = Math.round((meeting.endedAt - meeting.createdAt) / 1000);
+              }
+              await meeting.save();
+              console.log(`Disconnected clean up: meeting ${roomId} marked completed with duration ${meeting.duration}s.`);
+            }
           } catch (err) {
             console.error(`Failed to mark meeting ${roomId} as completed on disconnect:`, err);
           }
