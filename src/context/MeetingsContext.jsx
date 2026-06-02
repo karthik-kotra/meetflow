@@ -64,6 +64,9 @@ export function MeetingsProvider({ children }) {
       const res = await fetch(`/api/meetings/${id}`)
       if (res.ok) {
         return await res.json()
+      } else {
+        const data = await res.json().catch(() => ({}))
+        return { error: true, status: res.status, message: data.message }
       }
     } catch (error) {
       console.error('Failed to fetch meeting details:', error)
@@ -135,6 +138,41 @@ export function MeetingsProvider({ children }) {
     return null
   }
 
+  const processMeetingAI = async (id) => {
+    try {
+      const res = await fetch(`/api/meetings/${id}/process-ai`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      })
+      if (res.ok) {
+        const updated = await res.json()
+        setMeetings((prev) => prev.map((m) => m._id === id || m.roomId === id ? updated : m))
+        return updated
+      }
+    } catch (error) {
+      console.error('Failed to process meeting AI:', error)
+    }
+    return null
+  }
+
+  const saveMeetingNotes = async (id, notes) => {
+    try {
+      const res = await fetch(`/api/meetings/${id}/notes`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ notes }),
+      })
+      if (res.ok) {
+        const updated = await res.json()
+        setMeetings((prev) => prev.map((m) => m._id === id || m.roomId === id ? updated : m))
+        return updated
+      }
+    } catch (error) {
+      console.error('Failed to save meeting notes:', error)
+    }
+    return null
+  }
+
   return (
     <MeetingsContext.Provider 
       value={{ 
@@ -146,6 +184,8 @@ export function MeetingsProvider({ children }) {
         fetchMeetingDetails,
         deleteMeeting,
         updateMeetingStatus,
+        processMeetingAI,
+        saveMeetingNotes,
         ongoingMeetings: getOngoingMeetings,
         upcomingMeetings: getUpcomingMeetings
       }}

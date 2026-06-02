@@ -25,7 +25,7 @@ const meetingMessageSchema = new mongoose.Schema(
     },
     type: {
       type: String,
-      enum: ['message', 'system'],
+      enum: ['message', 'system', 'transcript'],
       default: 'message',
     },
   },

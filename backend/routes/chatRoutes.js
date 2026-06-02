@@ -1,9 +1,13 @@
 const express = require('express');
-const { getMessages } = require('../controllers/chatController');
+const { getMessages, summarizeMessages } = require('../controllers/chatController');
 const { protect } = require('../middleware/authMiddleware');
 
 const router = express.Router();
 
-router.get('/:userId', protect, getMessages);
+router.route('/:userId')
+  .get(protect, getMessages);
+
+router.route('/:userId/summarize')
+  .post(protect, summarizeMessages);
 
 module.exports = router;

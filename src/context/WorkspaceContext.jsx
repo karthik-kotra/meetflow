@@ -12,6 +12,7 @@ export function WorkspaceProvider({ children }) {
   const [tasks, setTasks] = useState([]);
   const [channelMessages, setChannelMessages] = useState({}); // { channelId: [messages...] }
   const [notes, setNotes] = useState({ content: '', lastUpdatedBy: null });
+  const [typingUsers, setTypingUsers] = useState({}); // { channelId: { userId: userName } }
   
   const socketRef = useRef(null);
   const activeWorkspaceIdRef = useRef(null);
@@ -78,8 +79,33 @@ export function WorkspaceProvider({ children }) {
       });
     });
 
+    socketRef.current.on('workspace_task_deleted', (taskId) => {
+      setTasks(prev => prev.filter(t => t._id !== taskId));
+    });
+
     socketRef.current.on('workspace_notes_synced', ({ content, lastUpdatedBy }) => {
       setNotes({ content, lastUpdatedBy });
+    });
+
+    socketRef.current.on('workspace_user_typing', ({ channelId, userId, userName }) => {
+      setTypingUsers(prev => ({
+        ...prev,
+        [channelId]: {
+          ...(prev[channelId] || {}),
+          [userId]: userName
+        }
+      }));
+    });
+
+    socketRef.current.on('workspace_user_stop_typing', ({ channelId, userId }) => {
+      setTypingUsers(prev => {
+        const channelTyping = { ...(prev[channelId] || {}) };
+        delete channelTyping[userId];
+        return {
+          ...prev,
+          [channelId]: channelTyping
+        };
+      });
     });
 
     socketRef.current.on('workspace_updated', (updatedWs) => {
@@ -171,6 +197,50 @@ export function WorkspaceProvider({ children }) {
       }
     } catch (err) {
       console.error('Failed to create channel:', err);
+    }
+  }, [activeWorkspaceId]);
+
+  const editChannel = useCallback(async (channelId, name, description) => {
+    if (!activeWorkspaceId) return;
+    try {
+      const res = await fetch(`/api/workspaces/${activeWorkspaceId}/channels/${channelId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, description })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setActiveWorkspace(data);
+        setWorkspaces(prev => prev.map(w => w._id === data._id ? data : w));
+        // Sync via Socket
+        if (socketRef.current) {
+          socketRef.current.emit('create_channel', { workspaceId: activeWorkspaceId, workspace: data });
+        }
+        return data;
+      }
+    } catch (err) {
+      console.error('Failed to edit channel:', err);
+    }
+  }, [activeWorkspaceId]);
+
+  const deleteChannel = useCallback(async (channelId) => {
+    if (!activeWorkspaceId) return;
+    try {
+      const res = await fetch(`/api/workspaces/${activeWorkspaceId}/channels/${channelId}`, {
+        method: 'DELETE'
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setActiveWorkspace(data);
+        setWorkspaces(prev => prev.map(w => w._id === data._id ? data : w));
+        // Sync via Socket
+        if (socketRef.current) {
+          socketRef.current.emit('create_channel', { workspaceId: activeWorkspaceId, workspace: data });
+        }
+        return data;
+      }
+    } catch (err) {
+      console.error('Failed to delete channel:', err);
     }
   }, [activeWorkspaceId]);
 
@@ -286,6 +356,27 @@ export function WorkspaceProvider({ children }) {
     }
   }, [activeWorkspaceId]);
 
+  const deleteTask = useCallback(async (taskId) => {
+    if (!activeWorkspaceId) return;
+    try {
+      const res = await fetch(`/api/workspaces/${activeWorkspaceId}/tasks/${taskId}`, {
+        method: 'DELETE'
+      });
+      if (res.ok) {
+        setTasks(prev => prev.filter(t => t._id !== taskId));
+        // Sync via Socket
+        if (socketRef.current) {
+          socketRef.current.emit('delete_workspace_task', { workspaceId: activeWorkspaceId, taskId });
+        }
+        return true;
+      }
+      return false;
+    } catch (err) {
+      console.error('Failed to delete task:', err);
+      return false;
+    }
+  }, [activeWorkspaceId]);
+
   const saveNotesToDatabase = async (content) => {
     if (!activeWorkspaceId) return;
     try {
@@ -324,6 +415,17 @@ export function WorkspaceProvider({ children }) {
     }, 2000);
   }, [activeWorkspaceId, user]);
 
+  const sendWorkspaceTyping = useCallback((channelId, isTyping) => {
+    if (socketRef.current && activeWorkspaceId && user) {
+      socketRef.current.emit(isTyping ? 'workspace_typing' : 'workspace_stop_typing', {
+        workspaceId: activeWorkspaceId,
+        channelId,
+        userId: user.id,
+        userName: user.name
+      });
+    }
+  }, [activeWorkspaceId, user]);
+
   return (
     <WorkspaceContext.Provider
       value={{
@@ -341,8 +443,13 @@ export function WorkspaceProvider({ children }) {
         sendChannelMessage,
         createTask,
         updateTask,
+        deleteTask,
         editNotes,
-        createChannel
+        createChannel,
+        editChannel,
+        deleteChannel,
+        typingUsers,
+        sendWorkspaceTyping
       }}
     >
       {children}

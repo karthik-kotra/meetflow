@@ -43,6 +43,39 @@ const meetingSchema = new mongoose.Schema({
       ref: 'User',
     },
   ],
+  workspaceId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Workspace',
+  },
+  startedAt: {
+    type: Date,
+  },
+  endedAt: {
+    type: Date,
+  },
+  duration: {
+    type: Number,
+    default: 0,
+  },
+  notes: {
+    type: String,
+    default: '',
+  },
+  summary: {
+    type: String,
+    default: '',
+  },
+  actionItems: [
+    {
+      task: { type: String, required: true },
+      priority: { type: String, enum: ['low', 'medium', 'high'], default: 'medium' },
+      assigneeName: { type: String, default: '' },
+    }
+  ],
+  aiProcessed: {
+    type: Boolean,
+    default: false,
+  },
   createdAt: {
     type: Date,
     default: Date.now,

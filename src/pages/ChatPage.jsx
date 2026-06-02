@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { Search, Send, Circle, MessageSquare, Smile } from 'lucide-react'
+import { Search, Send, Circle, MessageSquare, Smile, Sparkles, X } from 'lucide-react'
 import { useChat } from '@/context/ChatContext'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Input } from '@/components/ui/input'
@@ -17,6 +17,44 @@ function formatTime(ts) {
 function getInitials(name = '') {
   return name.split(' ').map((n) => n[0]).join('').toUpperCase().slice(0, 2)
 }
+
+const renderTextWithMentions = (text, contactsList = []) => {
+  if (!text) return '';
+  if (!contactsList || contactsList.length === 0) {
+    const parts = text.split(/(@\w+(?:\s\w+)?)/g);
+    return parts.map((part, i) => {
+      if (part.startsWith('@')) {
+        return <span key={i} className="bg-primary/20 text-primary font-bold px-1 py-0.5 rounded">{part}</span>;
+      }
+      return part;
+    });
+  }
+  // Sort contacts by name length descending
+  const sortedContacts = [...contactsList].sort((a, b) => b.name.length - a.name.length);
+  
+  let result = [text];
+  for (const contact of sortedContacts) {
+    const name = contact.name;
+    if (!name) continue;
+    const mentionStr = `@${name}`;
+    const newResult = [];
+    for (const item of result) {
+      if (typeof item !== 'string') {
+        newResult.push(item);
+        continue;
+      }
+      const parts = item.split(new RegExp(`(${mentionStr})`, 'gi'));
+      newResult.push(...parts.map((p, idx) => {
+        if (p.toLowerCase() === mentionStr.toLowerCase()) {
+          return <span key={`${contact.id || idx}-${idx}`} className="bg-primary/25 text-primary font-bold px-1.5 py-0.5 rounded-md border border-primary/20">{p}</span>;
+        }
+        return p;
+      }));
+    }
+    result = newResult;
+  }
+  return result;
+};
 
 function ContactRow({ contact, isActive, lastMessage, onClick, currentUser }) {
   const preview = lastMessage
@@ -81,7 +119,7 @@ function ContactRow({ contact, isActive, lastMessage, onClick, currentUser }) {
   )
 }
 
-function ChatBubble({ msg, isMe, senderName }) {
+function ChatBubble({ msg, isMe, senderName, contactsList }) {
   return (
     <div className={cn('flex items-end gap-2 group', isMe ? 'flex-row-reverse' : 'flex-row')}>
       {!isMe && (
@@ -99,7 +137,7 @@ function ChatBubble({ msg, isMe, senderName }) {
             : 'bg-card border border-border text-foreground rounded-bl-sm'
         )}
       >
-        {msg.text}
+        {renderTextWithMentions(msg.text, contactsList)}
         <span
           title={format(new Date(msg.createdAt || msg.ts), 'PPPP, h:mm:ss a')}
           className={cn(
@@ -148,8 +186,16 @@ export default function ChatPage() {
   const inputRef = useRef(null)
   const typingTimeoutRef = useRef(null)
 
+  // Autocomplete & Emojis
+  const [showMentionDropdown, setShowMentionDropdown] = useState(false)
+  const [mentionQuery, setMentionQuery] = useState('')
+  const [mentionIndex, setMentionIndex] = useState(0)
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false)
+
   const activeContact = contacts.find((c) => c.id === activeContactId)
   const msgs = activeContactId ? getMessages(activeContactId) : []
+  const [chatSummary, setChatSummary] = useState("")
+  const [summarizing, setSummarizing] = useState(false)
 
   const filtered = contacts.filter((c) =>
     c.name.toLowerCase().includes(search.toLowerCase()) ||
@@ -166,6 +212,8 @@ export default function ChatPage() {
 
   // Stop typing on active chat change or unmount
   useEffect(() => {
+    setChatSummary("")
+    setSummarizing(false)
     return () => {
       if (typingTimeoutRef.current) {
         clearTimeout(typingTimeoutRef.current)
@@ -174,7 +222,8 @@ export default function ChatPage() {
   }, [activeContactId])
 
   const handleInputChange = (e) => {
-    setDraft(e.target.value)
+    const text = e.target.value
+    setDraft(text)
 
     if (!activeContactId) return
 
@@ -189,7 +238,31 @@ export default function ChatPage() {
     typingTimeoutRef.current = setTimeout(() => {
       sendTyping(activeContactId, false)
     }, 2000)
+
+    // Autocomplete triggers
+    const match = text.match(/(?:^|\s)@(\w*)$/)
+    if (match) {
+      setShowMentionDropdown(true)
+      setMentionQuery(match[1])
+      setMentionIndex(0)
+    } else {
+      setShowMentionDropdown(false)
+    }
   }
+
+  const insertMention = (contactName) => {
+    const cursorIndex = draft.lastIndexOf('@')
+    if (cursorIndex === -1) return
+    const beforeMention = draft.substring(0, cursorIndex)
+    const completedText = `${beforeMention}@${contactName} `
+    setDraft(completedText)
+    setShowMentionDropdown(false)
+  }
+
+  const filteredContactsForMention = contacts.filter(c => {
+    if (c.id === currentUser?.id) return false
+    return c.name.toLowerCase().includes(mentionQuery.toLowerCase())
+  })
 
   const handleSend = () => {
     const text = draft.trim()
@@ -203,9 +276,55 @@ export default function ChatPage() {
     sendTyping(activeContactId, false)
     
     setDraft('')
+    setShowMentionDropdown(false)
+  }
+
+  const handleSummarize = async () => {
+    if (!activeContactId) return
+    setSummarizing(true)
+    try {
+      const res = await fetch(`/api/chat/${activeContactId}/summarize`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setChatSummary(data.summary)
+      } else {
+        alert("Failed to summarize chat history.")
+      }
+    } catch (err) {
+      console.error("Error summarizing chat:", err)
+      alert("Failed to summarize chat history.")
+    } finally {
+      setSummarizing(false)
+    }
   }
 
   const handleKeyDown = (e) => {
+    if (showMentionDropdown && filteredContactsForMention.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setMentionIndex(prev => (prev + 1) % filteredContactsForMention.length)
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setMentionIndex(prev => (prev - 1 + filteredContactsForMention.length) % filteredContactsForMention.length)
+        return
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault()
+        insertMention(filteredContactsForMention[mentionIndex].name)
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setShowMentionDropdown(false)
+        return
+      }
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       handleSend()
@@ -255,6 +374,7 @@ export default function ChatPage() {
           msg={msg}
           isMe={msg.senderId === currentUser.id}
           senderName={activeContact.name}
+          contactsList={contacts}
         />
       )
     })
@@ -378,7 +498,70 @@ export default function ChatPage() {
             </div>
 
             {/* Input bar */}
-            <div className="px-6 py-4 border-t border-border bg-card/30 shrink-0">
+            <div className="px-6 py-4 border-t border-border bg-card/30 shrink-0 relative">
+              {/* Mention Autocomplete Dropdown */}
+              {showMentionDropdown && filteredContactsForMention.length > 0 && (
+                <div className="absolute bottom-full left-6 mb-2 bg-card border border-border rounded-xl shadow-xl w-64 max-h-48 overflow-y-auto p-1.5 z-40 animate-fade-in backdrop-blur-md">
+                  <div className="px-2.5 py-1.5 text-[9px] uppercase tracking-wider text-muted-foreground font-bold font-display border-b border-border/40">Teammates to mention</div>
+                  {filteredContactsForMention.map((c, idx) => (
+                    <button
+                      key={c.id}
+                      type="button"
+                      onClick={() => insertMention(c.name)}
+                      className={cn(
+                        "w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-xs font-semibold text-left transition-colors",
+                        idx === mentionIndex
+                          ? "bg-primary/15 text-primary"
+                          : "text-foreground hover:bg-secondary/60"
+                      )}
+                    >
+                      <Avatar className="h-5 w-5">
+                        <AvatarFallback className="text-[8px] bg-secondary text-primary font-display font-bold">
+                          {getInitials(c.name)}
+                        </AvatarFallback>
+                      </Avatar>
+                      <span className="truncate">{c.name}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {/* Emoji Picker Panel */}
+              {showEmojiPicker && (
+                <div className="absolute bottom-full right-6 mb-2 bg-card border border-border rounded-xl shadow-xl p-2.5 z-40 animate-fade-in grid grid-cols-5 gap-1.5 w-44 backdrop-blur-md">
+                  {['👍', '❤️', '🔥', '😂', '🚀', '🎉', '👀', '💡', '💯', '✨'].map((emoji) => (
+                    <button
+                      key={emoji}
+                      type="button"
+                      onClick={() => {
+                        setDraft(prev => prev + emoji);
+                        setShowEmojiPicker(false);
+                      }}
+                      className="w-7 h-7 text-sm flex items-center justify-center rounded-lg hover:bg-secondary transition-all"
+                    >
+                      {emoji}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {chatSummary && (
+                <div className="p-3 bg-primary/10 border border-primary/20 rounded-xl relative animate-fade-in text-xs text-foreground leading-relaxed shadow-sm mb-3">
+                  <button
+                    type="button"
+                    onClick={() => setChatSummary("")}
+                    className="absolute top-2.5 right-2.5 text-muted-foreground hover:text-foreground cursor-pointer transition-colors"
+                    title="Close Summary"
+                  >
+                    <X size={12} />
+                  </button>
+                  <div className="flex items-center gap-1.5 font-display font-extrabold text-[10px] text-primary uppercase tracking-wider mb-1">
+                    <Sparkles size={11} className="text-primary animate-pulse" /> Chat Summary
+                  </div>
+                  <p className="pr-4 font-medium select-text">{chatSummary}</p>
+                </div>
+              )}
+
               <div className="flex items-center gap-3 bg-secondary rounded-xl px-4 py-2 border border-border focus-within:border-primary/40 transition-colors">
                 <input
                   ref={inputRef}
@@ -388,6 +571,36 @@ export default function ChatPage() {
                   placeholder={`Message ${activeContact.name}…`}
                   className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground outline-none"
                 />
+                <button
+                  type="button"
+                  onClick={() => setShowEmojiPicker(!showEmojiPicker)}
+                  className={cn(
+                    "text-muted-foreground hover:text-primary transition-colors pr-1",
+                    showEmojiPicker && "text-primary"
+                  )}
+                  title="Add emoji"
+                >
+                  <Smile size={17} />
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSummarize}
+                  disabled={summarizing}
+                  className={cn(
+                    'flex items-center justify-center w-8 h-8 rounded-lg border border-primary/20 text-primary bg-primary/5 hover:bg-primary/10 transition-all duration-150 shrink-0 mr-1',
+                    summarizing && 'opacity-60 cursor-not-allowed'
+                  )}
+                  title="Summarize Chat Messages"
+                >
+                  {summarizing ? (
+                    <svg className="animate-spin h-3.5 w-3.5 text-primary" viewBox="0 0 24 24" fill="none">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                  ) : (
+                    <Sparkles size={15} />
+                  )}
+                </button>
                 <button
                   onClick={handleSend}
                   disabled={!draft.trim()}

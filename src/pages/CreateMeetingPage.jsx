@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { CalendarDays, Clock, FileText, Type, CheckCircle2, Lock } from 'lucide-react'
+import { CalendarDays, Clock, FileText, Type, CheckCircle2, Lock, Users, Briefcase } from 'lucide-react'
 import { useMeetings } from '@/context/MeetingsContext'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -20,6 +20,37 @@ export default function CreateMeetingPage() {
     isPrivate: false,
   })
   const [errors, setErrors] = useState({})
+  const [users, setUsers] = useState([])
+  const [invitedUsers, setInvitedUsers] = useState([])
+  const [workspaces, setWorkspaces] = useState([])
+  const [selectedWorkspace, setSelectedWorkspace] = useState('')
+
+  useEffect(() => {
+    const loadUsers = async () => {
+      try {
+        const res = await fetch('/api/users')
+        if (res.ok) {
+          const data = await res.json()
+          setUsers(data)
+        }
+      } catch (err) {
+        console.error('Failed to load users for invitation:', err)
+      }
+    }
+    const loadWorkspaces = async () => {
+      try {
+        const res = await fetch('/api/workspaces')
+        if (res.ok) {
+          const data = await res.json()
+          setWorkspaces(data)
+        }
+      } catch (err) {
+        console.error('Failed to load workspaces:', err)
+      }
+    }
+    loadUsers()
+    loadWorkspaces()
+  }, [])
 
   const validate = () => {
     const e = {}
@@ -35,7 +66,11 @@ export default function CreateMeetingPage() {
     if (Object.keys(errs).length) { setErrors(errs); return }
     setErrors({})
     setLoading(true)
-    const meeting = await createMeeting(form)
+    const meeting = await createMeeting({
+      ...form,
+      participants: form.isPrivate ? invitedUsers : [],
+      workspaceId: selectedWorkspace || null
+    })
     setLoading(false)
     if (meeting) {
       setSuccess(true)
@@ -185,6 +220,83 @@ export default function CreateMeetingPage() {
             </div>
           </div>
         </div>
+
+        {/* Workspace Association */}
+        <div className="bg-card border border-border rounded-xl p-6 space-y-5 animate-fade-in">
+          <h2 className="font-display font-semibold text-foreground flex items-center gap-2 text-sm">
+            <Briefcase size={15} className="text-primary" />
+            Workspace Association (Optional)
+          </h2>
+          <div className="space-y-1.5">
+            <Label htmlFor="workspace">Select Workspace</Label>
+            <select
+              id="workspace"
+              value={selectedWorkspace}
+              onChange={(e) => setSelectedWorkspace(e.target.value)}
+              className="w-full bg-secondary border border-border rounded-lg px-3 py-2 text-sm text-foreground outline-none focus:border-primary/40 focus:ring-1 focus:ring-ring cursor-pointer"
+            >
+              <option value="">None (Personal / Public Meeting)</option>
+              {workspaces.map(w => (
+                <option key={w._id} value={w._id}>{w.name}</option>
+              ))}
+            </select>
+            <p className="text-xs text-muted-foreground mt-1 font-medium">Associate this meeting with a workspace to include it in the workspace's analytics.</p>
+          </div>
+        </div>
+
+        {/* Invite Users when meeting is Private */}
+        {form.isPrivate && users.length > 0 && (
+          <div className="bg-card border border-border rounded-xl p-6 space-y-4 animate-fade-in">
+            <div className="flex justify-between items-center">
+              <h2 className="font-display font-semibold text-foreground flex items-center gap-2 text-sm">
+                <Users size={15} className="text-primary" />
+                Invite Members
+              </h2>
+              <span className="text-[10px] bg-primary/10 text-primary font-bold px-2.5 py-0.5 rounded-full border border-primary/25">
+                {invitedUsers.length} selected
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground">Select team members to invite to this private meeting.</p>
+            <div className="max-h-48 overflow-y-auto border border-border/40 rounded-xl p-3 bg-secondary/15 space-y-2.5 custom-scrollbar">
+              {users.map((u) => {
+                const isSelected = invitedUsers.includes(u._id);
+                return (
+                  <div
+                    key={u._id}
+                    onClick={() => {
+                      if (isSelected) {
+                        setInvitedUsers(invitedUsers.filter(id => id !== u._id))
+                      } else {
+                        setInvitedUsers([...invitedUsers, u._id])
+                      }
+                    }}
+                    className={`flex items-center justify-between p-2.5 rounded-xl border transition-all cursor-pointer ${
+                      isSelected
+                        ? 'bg-primary/10 border-primary/30 shadow-sm'
+                        : 'bg-card/50 border-transparent hover:bg-secondary/40'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <div className="h-8 w-8 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center text-[11px] font-bold text-primary select-none shrink-0">
+                        {u.name?.[0]?.toUpperCase()}
+                      </div>
+                      <div className="text-left">
+                        <p className="text-xs font-semibold text-foreground leading-none">{u.name}</p>
+                        <p className="text-[10px] text-muted-foreground mt-1 leading-none">{u.email}</p>
+                      </div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      readOnly
+                      className="h-4 w-4 rounded border-border bg-background text-primary focus:ring-primary accent-primary cursor-pointer"
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {/* Preview card */}
         {(form.title || form.date) && (
