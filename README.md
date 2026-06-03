@@ -14,6 +14,21 @@ By combining modern WebRTC video rooms, instant direct/workspace chats, collabor
 ### Video Call Meeting Room
 ![Video Call Meeting Room](./screenshots/meeting_room.png)
 
+### User Dashboard
+![User Dashboard](./screenshots/dashboard_view.png)
+
+### Schedule / Create Meeting Room
+![Schedule / Create Meeting Room](./screenshots/schedule_meeting.png)
+
+### Team Workspaces
+![Team Workspaces](./screenshots/team_workspaces.png)
+
+### Kanban Sprint Board (Task List)
+![Kanban Sprint Board](./screenshots/kanban_board_1.png)
+
+### Kanban Workflow Board (Active Sprint)
+![Kanban Workflow Board](./screenshots/kanban_board_2.png)
+
 ---
 
 ## 🛠️ Tech Stack
