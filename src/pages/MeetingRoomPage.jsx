@@ -34,6 +34,11 @@ function VideoView({ stream, name, muted, isLocal, isVideoOn, isAudioOn, isHandR
         autoPlay
         playsInline
         muted={muted}
+        data-is-local={isLocal}
+        data-name={name}
+        data-video-on={isVideoOn && !!stream}
+        data-audio-on={isAudioOn}
+        data-hand-raised={isHandRaised}
         className={`w-full h-full object-cover ${mirror ? 'transform scale-x-[-1]' : ''} ${(isVideoOn && stream) ? 'block' : 'opacity-0 absolute inset-0 pointer-events-none'}`}
       />
       {isHandRaised && (
@@ -131,10 +136,15 @@ export default function MeetingRoomPage() {
   const localStreamRef = useRef(null)
   const lobbyVideoRef = useRef(null)
   const localVideoTrackRef = useRef(null)
+  const peersRef = useRef([])
 
   useEffect(() => {
     localStreamRef.current = localStream
   }, [localStream])
+
+  useEffect(() => {
+    peersRef.current = peers
+  }, [peers])
 
   useEffect(() => {
     if (lobbyVideoRef.current && localStream) {
@@ -165,6 +175,376 @@ export default function MeetingRoomPage() {
   const [chatSummary, setChatSummary] = useState("")
   const [summarizingChats, setSummarizingChats] = useState(false)
   const [syncingTask, setSyncingTask] = useState(null)
+
+  // Recording State Management
+  const [recordingState, setRecordingState] = useState('idle') // 'idle' | 'recording' | 'uploading' | 'processing' | 'success' | 'error'
+  const [recordingDuration, setRecordingDuration] = useState(0)
+  const mediaRecorderRef = useRef(null)
+  const recordedChunksRef = useRef([])
+  const recordingTimerRef = useRef(null)
+  const recordingRafRef = useRef(null)
+  const recordingAudioCtxRef = useRef(null)
+  const connectedAudioTracksRef = useRef(new Set())
+  const navigateAfterUploadRef = useRef(false)
+
+  // Start recording meeting stream using canvas compositor and mixed audio destination
+  const startRecording = async () => {
+    // Clear chunk list
+    recordedChunksRef.current = []
+    connectedAudioTracksRef.current.clear()
+
+    // 1. Initialize AudioContext for mixing
+    let audioCtx;
+    let audioDest;
+    try {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)()
+      recordingAudioCtxRef.current = audioCtx
+      audioDest = audioCtx.createMediaStreamDestination()
+      
+      if (audioCtx.state === 'suspended') {
+        await audioCtx.resume()
+      }
+    } catch (err) {
+      console.error('Failed to initialize AudioContext:', err)
+      addToast('Failed to initialize audio recorder: ' + err.message, 'error')
+      setRecordingState('error')
+      return
+    }
+
+    // 2. Create offscreen Canvas for video compositing
+    const canvas = document.createElement('canvas')
+    canvas.width = 1280
+    canvas.height = 720
+    const ctx = canvas.getContext('2d')
+
+    // 3. Define the draw & mix loop (running on requestAnimationFrame)
+    const drawAndMixFrame = () => {
+      // Find all participant video elements in DOM
+      const videos = Array.from(document.querySelectorAll('video[data-name]'))
+
+      // Sort them to keep layout position consistent: local first, then alphabetically by name
+      videos.sort((a, b) => {
+        const isLocalA = a.getAttribute('data-is-local') === 'true'
+        const isLocalB = b.getAttribute('data-is-local') === 'true'
+        if (isLocalA && !isLocalB) return -1
+        if (!isLocalA && isLocalB) return 1
+        return (a.getAttribute('data-name') || '').localeCompare(b.getAttribute('data-name') || '')
+      })
+
+      const N = videos.length
+      let cols = 1
+      let rows = 1
+      if (N > 1) {
+        cols = Math.ceil(Math.sqrt(N))
+        rows = Math.ceil(N / cols)
+      }
+
+      const tileWidth = Math.floor(1280 / cols)
+      const tileHeight = Math.floor(720 / rows)
+
+      // Draw background
+      ctx.fillStyle = '#090d16' // dark slate
+      ctx.fillRect(0, 0, 1280, 720)
+
+      videos.forEach((videoElement, i) => {
+        const colIndex = i % cols
+        const rowIndex = Math.floor(i / cols)
+        const x = colIndex * tileWidth
+        const y = rowIndex * tileHeight
+        const pName = videoElement.getAttribute('data-name') || 'User'
+        const videoOn = videoElement.getAttribute('data-video-on') === 'true'
+
+        // Draw background gradient for each tile
+        const gradient = ctx.createLinearGradient(x, y, x + tileWidth, y + tileHeight)
+        gradient.addColorStop(0, '#1e293b') // slate-800
+        gradient.addColorStop(1, '#0f172a') // slate-900
+        ctx.fillStyle = gradient
+        ctx.fillRect(x, y, tileWidth, tileHeight)
+
+        if (videoOn && videoElement.readyState >= 2) {
+          // Draw video frame with object-cover style crop
+          const sw = videoElement.videoWidth || 640
+          const sh = videoElement.videoHeight || 480
+          const sAspect = sw / sh
+          const dAspect = tileWidth / tileHeight
+          let sx, sy, sWidth, sHeight
+          if (sAspect > dAspect) {
+            sWidth = sh * dAspect
+            sHeight = sh
+            sx = (sw - sWidth) / 2
+            sy = 0
+          } else {
+            sWidth = sw
+            sHeight = sw / dAspect
+            sx = 0
+            sy = (sh - sHeight) / 2
+          }
+          ctx.drawImage(videoElement, sx, sy, sWidth, sHeight, x, y, tileWidth, tileHeight)
+        } else {
+          // Draw Avatar circle
+          const cx = x + tileWidth / 2
+          const cy = y + tileHeight / 2
+          const radius = Math.min(tileWidth, tileHeight) * 0.18
+          ctx.beginPath()
+          ctx.arc(cx, cy, radius, 0, 2 * Math.PI)
+          ctx.fillStyle = 'rgba(99, 102, 241, 0.2)' // Indigo accents
+          ctx.fill()
+          ctx.strokeStyle = 'rgba(99, 102, 241, 0.4)'
+          ctx.lineWidth = 2
+          ctx.stroke()
+
+          const initial = (pName ? pName[0] : 'U').toUpperCase()
+          ctx.fillStyle = '#ffffff'
+          ctx.font = `bold ${Math.floor(radius * 0.8)}px sans-serif`
+          ctx.textAlign = 'center'
+          ctx.textBaseline = 'middle'
+          ctx.fillText(initial, cx, cy)
+        }
+
+        // Draw bottom name label pill
+        const labelHeight = 24
+        const labelY = y + tileHeight - labelHeight - 8
+        const labelX = x + 8
+        ctx.font = '12px sans-serif'
+        const textWidth = ctx.measureText(pName).width
+        const pillWidth = textWidth + 30
+
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.75)'
+        ctx.beginPath()
+        if (ctx.roundRect) {
+          ctx.roundRect(labelX, labelY, pillWidth, labelHeight, 6)
+        } else {
+          ctx.rect(labelX, labelY, pillWidth, labelHeight)
+        }
+        ctx.fill()
+
+        const audioOn = videoElement.getAttribute('data-audio-on') === 'true'
+        ctx.fillStyle = audioOn ? '#10b981' : '#ef4444' // Emerald green / red
+        ctx.beginPath()
+        ctx.arc(labelX + 12, labelY + labelHeight / 2, 4, 0, 2 * Math.PI)
+        ctx.fill()
+
+        ctx.fillStyle = '#ffffff'
+        ctx.textAlign = 'left'
+        ctx.textBaseline = 'middle'
+        ctx.fillText(pName, labelX + 22, labelY + labelHeight / 2)
+
+        // Draw hand raised
+        const handRaised = videoElement.getAttribute('data-hand-raised') === 'true'
+        if (handRaised) {
+          ctx.fillStyle = '#f59e0b' // amber-500
+          ctx.beginPath()
+          ctx.arc(x + tileWidth - 20, y + 20, 10, 0, 2 * Math.PI)
+          ctx.fill()
+          ctx.fillStyle = '#ffffff'
+          ctx.font = 'bold 10px sans-serif'
+          ctx.textAlign = 'center'
+          ctx.textBaseline = 'middle'
+          ctx.fillText('✋', x + tileWidth - 20, y + 20)
+        }
+      })
+
+      // 4. Dynamic Audio Mixing inside the render loop
+      // Mix local audio stream tracks if they become available and aren't connected yet
+      if (localStreamRef.current) {
+        localStreamRef.current.getAudioTracks().forEach(track => {
+          if (track.readyState === 'live' && !connectedAudioTracksRef.current.has(track.id)) {
+            try {
+              const srcStream = new MediaStream([track])
+              const sourceNode = audioCtx.createMediaStreamSource(srcStream)
+              sourceNode.connect(audioDest)
+              connectedAudioTracksRef.current.add(track.id)
+              console.log(`[Recording] Dynamically mixed local audio track: ${track.id}`)
+            } catch (err) {
+              console.warn('Failed to mix local audio track:', err)
+            }
+          }
+        })
+      }
+
+      // Mix remote peer audio tracks dynamically
+      peersRef.current.forEach(peer => {
+        if (peer.stream) {
+          peer.stream.getAudioTracks().forEach(track => {
+            if (track.readyState === 'live' && !connectedAudioTracksRef.current.has(track.id)) {
+              try {
+                const srcStream = new MediaStream([track])
+                const sourceNode = audioCtx.createMediaStreamSource(srcStream)
+                sourceNode.connect(audioDest)
+                connectedAudioTracksRef.current.add(track.id)
+                console.log(`[Recording] Dynamically mixed remote audio track: ${track.id} from peer ${peer.name}`)
+              } catch (err) {
+                console.warn('Failed to mix remote peer audio track:', err)
+              }
+            }
+          })
+        }
+      })
+
+      recordingRafRef.current = requestAnimationFrame(drawAndMixFrame)
+    }
+
+    // 4. Capture canvas stream (30 FPS)
+    const canvasStream = canvas.captureStream(30)
+    const videoTrack = canvasStream.getVideoTracks()[0]
+
+    if (!videoTrack) {
+      addToast('Failed to capture canvas video track.', 'error')
+      setRecordingState('error')
+      return
+    }
+
+    // 5. Combine canvas video track with mixed audio destination stream
+    const mixedStreamTracks = [videoTrack]
+    const audioTracks = audioDest.stream.getAudioTracks()
+    if (audioTracks.length > 0) {
+      mixedStreamTracks.push(audioTracks[0])
+    }
+
+    const recordingStream = new MediaStream(mixedStreamTracks)
+
+    // 6. Set up MediaRecorder
+    let mimeType = 'video/webm;codecs=vp9,opus'
+    if (!MediaRecorder.isTypeSupported(mimeType)) {
+      mimeType = 'video/webm;codecs=vp8,opus'
+    }
+    if (!MediaRecorder.isTypeSupported(mimeType)) {
+      mimeType = 'video/webm'
+    }
+
+    try {
+      const recorder = new MediaRecorder(recordingStream, { mimeType })
+      mediaRecorderRef.current = recorder
+
+      recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          recordedChunksRef.current.push(event.data)
+        }
+      }
+
+      recorder.onstop = async () => {
+        // Clean up animation frame loop
+        if (recordingRafRef.current) {
+          cancelAnimationFrame(recordingRafRef.current)
+          recordingRafRef.current = null
+        }
+        // Clean up audio context
+        if (recordingAudioCtxRef.current) {
+          recordingAudioCtxRef.current.close().catch(e => console.warn('Error closing AudioContext:', e))
+          recordingAudioCtxRef.current = null
+        }
+        // Stop captured canvas stream tracks
+        canvasStream.getTracks().forEach(t => t.stop())
+        // Upload the recorded file
+        await handleRecordingUpload()
+      }
+
+      // Start recording
+      recorder.start(1000) // 1s chunks
+      setRecordingState('recording')
+      setRecordingDuration(0)
+
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingDuration(prev => prev + 1)
+      }, 1000)
+
+      // Start compositor loop
+      recordingRafRef.current = requestAnimationFrame(drawAndMixFrame)
+
+      addToast('Meeting recording started.', 'info')
+    } catch (err) {
+      console.error('Failed to start MediaRecorder:', err)
+      addToast('Failed to start recording: ' + err.message, 'error')
+      setRecordingState('error')
+      
+      // Cleanup on failure
+      if (recordingRafRef.current) {
+        cancelAnimationFrame(recordingRafRef.current)
+        recordingRafRef.current = null
+      }
+      if (recordingAudioCtxRef.current) {
+        recordingAudioCtxRef.current.close().catch(e => {})
+        recordingAudioCtxRef.current = null
+      }
+    }
+  }
+
+  // Stop recording meeting stream
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop()
+      if (recordingTimerRef.current) {
+        clearInterval(recordingTimerRef.current)
+      }
+      setRecordingState('uploading')
+      addToast('Processing and uploading recording...', 'info')
+    }
+  }
+
+  // Upload recording file to backend
+  const handleRecordingUpload = async () => {
+    const chunks = recordedChunksRef.current
+    if (chunks.length === 0) {
+      addToast('No recorded data available.', 'error')
+      setRecordingState('idle')
+      if (navigateAfterUploadRef.current) {
+        cleanupConnections()
+        navigate('/meetings')
+      }
+      return
+    }
+
+    const blob = new Blob(chunks, { type: mediaRecorderRef.current?.mimeType || 'video/webm' })
+    const file = new File([blob], 'recording.webm', { type: blob.type })
+
+    const formData = new FormData()
+    formData.append('recording', file)
+
+    try {
+      const headers = {}
+      if (user && user.token) {
+        headers['Authorization'] = `Bearer ${user.token}`
+      }
+
+      const res = await fetch(`/api/meetings/${meeting?._id || id}/recording`, {
+        method: 'POST',
+        headers,
+        body: formData
+      })
+
+      if (res.ok) {
+        const data = await res.json()
+        setRecordingState('processing')
+        addToast('Recording uploaded! AI summary generation started in the background.', 'success')
+      } else {
+        const errData = await res.json().catch(() => ({}))
+        throw new Error(errData.message || 'Upload failed')
+      }
+    } catch (err) {
+      console.error('Failed to upload recording:', err)
+      addToast('Recording upload failed: ' + err.message, 'error')
+      setRecordingState('error')
+      setTimeout(() => setRecordingState('idle'), 3000)
+    } finally {
+      if (navigateAfterUploadRef.current) {
+        cleanupConnections()
+        navigate('/meetings')
+      }
+    }
+  }
+
+  // Format recording duration (seconds -> HH:MM:SS)
+  const formatTime = (secs) => {
+    const hours = Math.floor(secs / 3600)
+    const minutes = Math.floor((secs % 3600) / 60)
+    const seconds = secs % 60
+    
+    const pad = (num) => String(num).padStart(2, '0')
+    if (hours > 0) {
+      return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`
+    }
+    return `${pad(minutes)}:${pad(seconds)}`
+  }
 
   useEffect(() => {
     if (meeting && meeting.status === 'completed') {
@@ -375,6 +755,7 @@ export default function MeetingRoomPage() {
       if (notesTimeoutRef.current) clearTimeout(notesTimeoutRef.current)
       if (localTranscriptTimeoutRef.current) clearTimeout(localTranscriptTimeoutRef.current)
       peerTranscriptTimeoutsRef.current.forEach(t => clearTimeout(t))
+      if (recordingTimerRef.current) clearInterval(recordingTimerRef.current)
     }
   }, [])
 
@@ -509,8 +890,10 @@ export default function MeetingRoomPage() {
   useEffect(() => {
     const getDevices = async () => {
       try {
-        // Prompt initial permission grant
-        await navigator.mediaDevices.getUserMedia({ audio: true, video: true })
+        // Prompt initial permission grant and clean up the stream immediately
+        const permStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true })
+        permStream.getTracks().forEach(t => t.stop())
+        
         const devices = await navigator.mediaDevices.enumerateDevices()
         const video = devices.filter(d => d.kind === 'videoinput')
         const audio = devices.filter(d => d.kind === 'audioinput')
@@ -535,32 +918,45 @@ export default function MeetingRoomPage() {
     }
     
     try {
+      // Always capture audio — needed for reliable WebRTC replaceTrack muting without renegotiation.
+      // Only capture video when cam=true so we don't turn on the camera LED unnecessarily.
+      // When cam=false in lobby, toggleCam will dynamically acquire the camera on first enable.
       const constraints = {
         video: cam ? (vDeviceId ? { deviceId: { exact: vDeviceId } } : true) : false,
-        audio: mic ? (aDeviceId ? { deviceId: { exact: aDeviceId } } : true) : false
+        audio: aDeviceId ? { deviceId: { exact: aDeviceId } } : true
       }
       const stream = await navigator.mediaDevices.getUserMedia(constraints)
       setLocalStream(stream)
       
-      // Sync track enabled values
+      // Sync track enabled values to match lobby selection immediately
       stream.getVideoTracks().forEach(t => t.enabled = cam)
       stream.getAudioTracks().forEach(t => t.enabled = mic)
     } catch (err) {
-      console.warn('Initial media grab failed, attempting audio-only fallback (camera might be locked):', err)
+      console.warn('Initial media grab failed, attempting fallback combinations:', err)
+      // Fallback 1: Try audio-only if camera is blocked/missing
       try {
-        // Fallback: try audio-only if camera is locked/blocked by another browser
-        const audioOnlyConstraints = {
+        const audioConstraints = {
           video: false,
-          audio: mic ? (aDeviceId ? { deviceId: { exact: aDeviceId } } : true) : true
+          audio: aDeviceId ? { deviceId: { exact: aDeviceId } } : true
         }
-        const audioStream = await navigator.mediaDevices.getUserMedia(audioOnlyConstraints)
+        const audioStream = await navigator.mediaDevices.getUserMedia(audioConstraints)
         setLocalStream(audioStream)
         audioStream.getAudioTracks().forEach(t => t.enabled = mic)
-        
-        // Explicitly set camera state to off since it failed to grab
-        setCam(false)
-      } catch (fallbackErr) {
-        console.error('Audio fallback failed as well:', fallbackErr)
+        setCam(false) // Set camera state to off since it's unavailable
+      } catch (audioErr) {
+        // Fallback 2: Try video-only if microphone is blocked/missing
+        try {
+          const videoConstraints = {
+            video: vDeviceId ? { deviceId: { exact: vDeviceId } } : true,
+            audio: false
+          }
+          const videoStream = await navigator.mediaDevices.getUserMedia(videoConstraints)
+          setLocalStream(videoStream)
+          videoStream.getVideoTracks().forEach(t => t.enabled = cam)
+          setMic(false) // Set mic state to off since it's unavailable
+        } catch (videoErr) {
+          console.error('All media acquisition combinations failed:', videoErr)
+        }
       }
     }
   }
@@ -642,7 +1038,24 @@ export default function MeetingRoomPage() {
     // Configure Audio track / transceiver
     if (hasAudio) {
       stream.getAudioTracks().forEach(track => {
-        pc.addTrack(track, stream)
+        const sender = pc.addTrack(track, stream)
+        // Apply initial mute AFTER SDP negotiation completes (signalingState === 'stable').
+        // Doing it via a microtask before createOffer() would cause the offer direction to
+        // become 'recvonly'/'inactive', permanently breaking the ability to unmute without
+        // a full renegotiation. Waiting for 'stable' keeps the SDP as 'sendrecv' throughout.
+        if (!mic && sender) {
+          let muteApplied = false
+          const applyInitialMute = () => {
+            if (pc.signalingState === 'stable' && !muteApplied) {
+              muteApplied = true
+              sender.replaceTrack(null).catch(e =>
+                console.warn(`Initial audio null-replace for peer ${peerName}:`, e)
+              )
+              pc.removeEventListener('signalingstatechange', applyInitialMute)
+            }
+          }
+          pc.addEventListener('signalingstatechange', applyInitialMute)
+        }
       })
     } else {
       try {
@@ -816,6 +1229,24 @@ export default function MeetingRoomPage() {
       setNotesSaveStatus('saved')
     })
 
+    socket.on('meeting_ai_ready', (data) => {
+      setMeeting(prev => prev ? { 
+        ...prev, 
+        summary: data.summary, 
+        actionItems: data.actionItems, 
+        recordingUrl: data.recordingUrl || prev.recordingUrl,
+        aiProcessed: true 
+      } : prev)
+      setRecordingState('idle')
+      addToast('AI Summary & Playback are ready!', 'success')
+    })
+
+    socket.on('meeting_ai_error', (data) => {
+      setRecordingState('error')
+      addToast(`AI Processing error: ${data.message}`, 'error')
+      setTimeout(() => setRecordingState('idle'), 4000)
+    })
+
     // Emit connection event
     socket.emit('join_meeting', {
       roomId: meeting.roomId,
@@ -967,6 +1398,17 @@ export default function MeetingRoomPage() {
   // Track termination cleanup
   const cleanupConnections = () => {
     console.log('Dismantling WebRTC media connections...')
+    
+    // Stop recording loops and audio context
+    if (recordingRafRef.current) {
+      cancelAnimationFrame(recordingRafRef.current)
+      recordingRafRef.current = null
+    }
+    if (recordingAudioCtxRef.current) {
+      recordingAudioCtxRef.current.close().catch(e => {})
+      recordingAudioCtxRef.current = null
+    }
+
     if (socketRef.current) {
       socketRef.current.emit('leave_meeting', { roomId: meeting?.roomId || id })
       socketRef.current.disconnect()
@@ -1057,29 +1499,10 @@ export default function MeetingRoomPage() {
     
     if (localStream) {
       const audioTracks = localStream.getAudioTracks()
-      if (audioTracks.length > 0) {
-        audioTracks.forEach(t => t.enabled = nextMic)
-      } else if (nextMic) {
-        // Fallback: Microphone was not active (e.g. muted in lobby). Try to capture it now!
-        try {
-          const constraints = {
-            audio: selectedAudio ? { deviceId: { exact: selectedAudio } } : true,
-            video: false
-          }
-          const audioStream = await navigator.mediaDevices.getUserMedia(constraints)
-          const audioTrack = audioStream.getAudioTracks()[0]
-          audioTrack.enabled = true
-          
-          await updateAudioTrackOnPeers(audioTrack)
-          
-          const combined = new MediaStream([audioTrack, ...(localStream ? localStream.getVideoTracks() : [])])
-          setLocalStream(combined)
-        } catch (err) {
-          console.error('Failed to capture microphone track on toggle:', err)
-          setMic(false)
-          return
-        }
-      }
+      audioTracks.forEach(t => t.enabled = nextMic)
+      // Use the robust helper that handles all transceiver edge-cases
+      // (sender null from initial mute, direction resets, dynamic addTrack fallback)
+      await updateAudioTrackOnPeers(nextMic ? (audioTracks[0] || null) : null)
     }
     if (socketRef.current) {
       socketRef.current.emit('toggle_media', {
@@ -1096,10 +1519,15 @@ export default function MeetingRoomPage() {
     
     if (localStream) {
       const videoTracks = localStream.getVideoTracks()
-      if (videoTracks.length > 0) {
-        videoTracks.forEach(t => t.enabled = nextCam)
+      const liveVideoTracks = videoTracks.filter(t => t.readyState === 'live')
+      
+      if (liveVideoTracks.length > 0) {
+        // Camera track already in stream — just enable/disable it
+        liveVideoTracks.forEach(t => t.enabled = nextCam)
+        await updateVideoTrackOnPeers(nextCam ? liveVideoTracks[0] : null)
       } else if (nextCam) {
-        // Fallback: Camera was not active (e.g. camera off in lobby). Try to capture it now!
+        // No live video track (camera was never captured or was stopped).
+        // Acquire camera dynamically and add it to the peer connections.
         try {
           const constraints = {
             video: selectedVideo ? { deviceId: { exact: selectedVideo } } : true,
@@ -1108,15 +1536,16 @@ export default function MeetingRoomPage() {
           const camStream = await navigator.mediaDevices.getUserMedia(constraints)
           const camTrack = camStream.getVideoTracks()[0]
           camTrack.enabled = true
-          
           await updateVideoTrackOnPeers(camTrack)
-          
-          const combined = new MediaStream([camTrack, ...(localStream ? localStream.getAudioTracks() : [])])
+          // Merge the new camera track into a combined stream
+          const combined = new MediaStream([
+            camTrack,
+            ...localStream.getAudioTracks()
+          ])
           setLocalStream(combined)
         } catch (err) {
-          console.error('Failed to capture camera track on toggle:', err)
-          setCam(false)
-          return
+          console.error('Failed to acquire camera for toggleCam:', err)
+          setCam(false) // Revert if camera unavailable
         }
       }
     }
@@ -1211,10 +1640,17 @@ export default function MeetingRoomPage() {
     setTimeout(() => setCopied(false), 2000)
   }
 
-  const handleLeave = () => {
-    cleanupConnections()
-    navigate('/meetings')
+  const handleLeave = async () => {
+    if (recordingState === 'recording') {
+      addToast('Saving meeting recording. Please wait...', 'info')
+      navigateAfterUploadRef.current = true
+      stopRecording()
+    } else {
+      cleanupConnections()
+      navigate('/meetings')
+    }
   }
+
 
   // ------------------ LAYOUT DESIGN ------------------
 
@@ -1355,12 +1791,13 @@ export default function MeetingRoomPage() {
             <div className="lg:col-span-2 flex flex-col gap-4">
               
               {/* Tab Navigation triggers */}
-              <div className="flex bg-card/65 border border-border/40 p-1 rounded-xl shadow-sm backdrop-blur-sm shrink-0">
+              <div className="flex bg-card/65 border border-border/40 p-1 rounded-xl shadow-sm backdrop-blur-sm shrink-0 overflow-x-auto">
                 {[
                   { id: 'overview', label: 'Notes & Agenda', icon: FileText },
                   { id: 'ai', label: 'AI Summary', icon: Smile },
                   { id: 'actionItems', label: 'Action Items', icon: Hand },
-                  { id: 'transcript', label: 'Transcript', icon: MessageSquare }
+                  { id: 'transcript', label: 'Transcript', icon: MessageSquare },
+                  ...(meeting.recordingUrl && (!meeting.recordedBy || (user && (meeting.recordedBy === user.id || meeting.recordedBy === user._id || meeting.recordedBy?._id === user.id || meeting.recordedBy?._id === user._id))) ? [{ id: 'recording', label: 'Play Recording', icon: Video }] : [])
                 ].map((t) => {
                   const Icon = t.icon;
                   return (
@@ -1379,6 +1816,7 @@ export default function MeetingRoomPage() {
                   );
                 })}
               </div>
+
 
               {/* Tab Content Panel */}
               <div className="flex-1 min-h-[400px] bg-card/85 border border-border/40 rounded-2xl p-6 shadow-md backdrop-blur-md flex flex-col">
@@ -1694,7 +2132,34 @@ export default function MeetingRoomPage() {
                     </div>
                   </div>
                 )}
+
+                {/* 5. Play Recording Tab */}
+                {completedTab === 'recording' && meeting.recordingUrl && (!meeting.recordedBy || (user && (meeting.recordedBy === user.id || meeting.recordedBy === user._id || meeting.recordedBy?._id === user.id || meeting.recordedBy?._id === user._id))) && (
+                  <div className="flex-1 flex flex-col gap-4">
+                    <div className="flex justify-between items-center shrink-0">
+                      <h3 className="text-xs uppercase font-extrabold tracking-wider text-muted-foreground flex items-center gap-1.5">
+                        <Video size={13} className="text-primary" /> Watch Recorded Meeting
+                      </h3>
+                      <a 
+                        href={meeting.recordingUrl}
+                        download={`meeting_recording_${meeting._id}.webm`}
+                        className="text-xs text-primary hover:underline font-bold flex items-center gap-1.5"
+                      >
+                        Download WebM
+                      </a>
+                    </div>
+                    <div className="flex-1 bg-black rounded-2xl overflow-hidden aspect-video border border-border/80 flex items-center justify-center shadow-inner relative group min-h-[300px]">
+                      <video 
+                        src={meeting.recordingUrl}
+                        controls
+                        playsInline
+                        className="w-full h-full object-contain"
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
+
             </div>
 
             {/* Right Sidebar Area (Metadata & Attendees) */}
@@ -1794,6 +2259,24 @@ export default function MeetingRoomPage() {
 
   return (
     <div className="flex flex-col h-screen overflow-hidden bg-background animate-fade-in">
+      {/* Uploading / Saving Recording Blocker Overlay */}
+      {recordingState === 'uploading' && navigateAfterUploadRef.current && (
+        <div className="fixed inset-0 z-[100] bg-background/95 backdrop-blur-md flex flex-col items-center justify-center gap-4 animate-in fade-in duration-300">
+          <div className="relative flex items-center justify-center">
+            <svg className="animate-spin h-10 w-10 text-primary" viewBox="0 0 24 24" fill="none">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+            </svg>
+            <span className="absolute text-[10px] font-bold text-primary font-mono shrink-0 select-none">MF</span>
+          </div>
+          <div className="text-center space-y-1">
+            <h3 className="font-display font-extrabold text-sm text-foreground tracking-tight">Saving Meeting Recording</h3>
+            <p className="text-[11px] text-muted-foreground max-w-xs leading-relaxed">
+              We are uploading your call audio and finalizing your session. Please do not close this window.
+            </p>
+          </div>
+        </div>
+      )}
       {/* Header bar */}
       <header className="flex items-center justify-between px-6 py-3 border-b border-border bg-card shrink-0 shadow-sm z-10">
         <div className="flex items-center gap-3">
@@ -2425,6 +2908,42 @@ export default function MeetingRoomPage() {
             >
               <MonitorUp size={17} />
             </Button>
+
+            {/* Recording Controls */}
+            {recordingState === 'recording' ? (
+              <Button
+                variant="destructive"
+                size="icon"
+                className="h-11 w-11 rounded-full border border-destructive shadow animate-pulse hover:bg-destructive/95 transition-all text-white flex items-center justify-center"
+                onClick={stopRecording}
+                title={`Stop Recording (${formatTime(recordingDuration)})`}
+              >
+                <div className="h-3 w-3 bg-white rounded-sm shrink-0" />
+              </Button>
+            ) : recordingState === 'uploading' || recordingState === 'processing' ? (
+              <Button
+                variant="outline"
+                size="icon"
+                disabled
+                className="h-11 w-11 rounded-full border border-primary/40 text-primary bg-primary/5 shadow transition-all cursor-wait flex items-center justify-center"
+                title={recordingState === 'uploading' ? 'Uploading recording...' : 'AI Processing...'}
+              >
+                <svg className="animate-spin h-4 w-4 text-primary" viewBox="0 0 24 24" fill="none">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+              </Button>
+            ) : (
+              <Button
+                variant="outline"
+                size="icon"
+                className="h-11 w-11 rounded-full border border-border shadow text-muted-foreground hover:text-destructive hover:border-destructive/30 hover:bg-destructive/5 transition-all flex items-center justify-center"
+                onClick={startRecording}
+                title="Start Recording Meeting"
+              >
+                <span className="h-3 w-3 bg-destructive rounded-full shrink-0 animate-pulse" />
+              </Button>
+            )}
             <Button
               variant={myHandRaised ? 'secondary' : 'outline'}
               size="icon"
