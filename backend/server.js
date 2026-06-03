@@ -1,7 +1,11 @@
 const express = require('express');
-const mongoose = require('mongoose');
-const cors = require('cors');
 const dotenv = require('dotenv');
+// Load environment variables immediately
+dotenv.config();
+
+const mongoose = require('mongoose');
+const path = require('path');
+const cors = require('cors');
 const cookieParser = require('cookie-parser');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -17,9 +21,6 @@ const workspaceRoutes = require('./routes/workspaceRoutes');
 const meetingRoutes = require('./routes/meetingRoutes');
 const meetingChatRoutes = require('./routes/meetingChatRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
-
-// Load environment variables
-dotenv.config();
 
 const app = express();
 const server = http.createServer(app);
@@ -58,6 +59,9 @@ app.use('/api/workspaces', workspaceRoutes);
 app.use('/api/meetings', meetingRoutes);
 app.use('/api/meeting-chat', meetingChatRoutes);
 app.use('/api/notifications', notificationRoutes);
+
+// Serve static uploads folder
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Basic health check route
 app.get('/api/health', (req, res) => {

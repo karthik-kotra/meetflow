@@ -1,5 +1,7 @@
 const mongoose = require('mongoose');
 const Meeting = require('../models/Meeting');
+const storageService = require('../services/storage/index');
+const aiService = require('../services/aiService');
 
 // Helper to generate a unique 3-3-3 room code (e.g. abc-defg-hij)
 const generateUniqueRoomId = async () => {
@@ -256,118 +258,8 @@ exports.updateMeetingNotes = async (req, res) => {
 // @access  Private
 exports.processMeetingAI = async (req, res) => {
   try {
-    const MeetingMessage = require('../models/MeetingMessage');
-    const meeting = await Meeting.findById(req.params.id);
-
-    if (!meeting) {
-      return res.status(404).json({ message: 'Meeting not found' });
-    }
-
-    // Fetch all logs (transcripts & chats)
-    const messages = await MeetingMessage.find({ roomId: meeting.roomId }).sort({ createdAt: 1 });
-
-    const formattedLogs = messages.map(m => {
-      const time = m.createdAt ? m.createdAt.toISOString() : new Date().toISOString();
-      if (m.type === 'transcript') {
-        return `[${time}] (Spoken) ${m.senderName}: ${m.text}`;
-      } else if (m.type === 'system') {
-        return `[${time}] (System): ${m.text}`;
-      } else {
-        return `[${time}] (Chat) ${m.senderName}: ${m.text}`;
-      }
-    }).join('\n');
-
-    const apiKey = process.env.GROQ_API_KEY;
-    if (!apiKey) {
-      return res.status(500).json({ 
-        message: 'GROQ_API_KEY is not configured in backend .env file. Please check settings.' 
-      });
-    }
-
-    const systemPrompt = `You are an AI meeting assistant. Your task is to analyze the provided meeting details, transcripts, chat logs, and shared notes, then generate:
-1. A concise meeting summary.
-2. A list of actionable items with proposed titles, assignee names, and priority levels.
-
-You MUST reply ONLY with a JSON object matching the following structure:
-{
-  "summary": "Markdown-formatted summary of the meeting. Include headers, bullet points, and key takeaways.",
-  "actionItems": [
-    {
-      "task": "Clean and concise task description",
-      "priority": "high", // must be 'high', 'medium', or 'low'
-      "assigneeName": "Name of the person who should do this task, or leave blank if unspecified"
-    }
-  ]
-}
-
-Do not include any extra text, markdown code blocks (such as \`\`\`json), or explanations outside of the JSON.`;
-
-    const userPrompt = `
-Meeting Title: ${meeting.title}
-Meeting Description: ${meeting.description || '(No description)'}
-Shared Notes: ${meeting.notes || '(No notes saved)'}
-
-Meeting Logs (Chat & Spoken Transcript):
-${formattedLogs || '(No chat or transcript recorded)'}
-`;
-
-    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: 'llama-3.3-70b-versatile',
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt }
-        ],
-        temperature: 0.2,
-        response_format: { type: 'json_object' }
-      })
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      return res.status(response.status).json({ 
-        message: `Groq API responded with error: ${response.status}`, 
-        error: errorText 
-      });
-    }
-
-    const result = await response.json();
-    const contentText = result.choices?.[0]?.message?.content;
-    
-    if (!contentText) {
-      return res.status(500).json({ message: 'Invalid response structure from Groq API' });
-    }
-
-    // Parse the JSON object from the LLM
-    let aiData;
-    try {
-      aiData = JSON.parse(contentText);
-    } catch (parseErr) {
-      console.error('Failed to parse AI content as JSON:', contentText);
-      return res.status(500).json({ 
-        message: 'AI output could not be parsed as valid JSON', 
-        rawContent: contentText 
-      });
-    }
-
-    // Update the meeting fields
-    meeting.summary = aiData.summary || 'Summary could not be generated.';
-    meeting.actionItems = (aiData.actionItems || []).map(item => ({
-      task: item.task,
-      priority: ['low', 'medium', 'high'].includes(item.priority) ? item.priority : 'medium',
-      assigneeName: item.assigneeName || ''
-    }));
-    meeting.aiProcessed = true;
-
-    await meeting.save();
-
-    const populated = await Meeting.findById(meeting._id).populate('host', 'name email').populate('participants', 'name email');
-    res.status(200).json(populated);
+    const updated = await aiService.generateSummaryAndActionItems(req.params.id);
+    res.status(200).json(updated);
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
@@ -432,5 +324,56 @@ Summary:`;
     res.status(200).json({ summary: summaryText });
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
+  }
+};
+
+// @desc    Upload meeting recording to temporary storage, cache in Redis, and trigger background AI transcription
+// @route   POST /api/meetings/:id/recording
+// @access  Private
+exports.uploadRecording = async (req, res) => {
+  try {
+    const meeting = await Meeting.findById(req.params.id);
+    if (!meeting) {
+      return res.status(404).json({ message: 'Meeting not found' });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ message: 'No recording file uploaded' });
+    }
+
+    const fileKey = `recording_${meeting._id}_${Date.now()}`;
+    const fileBuffer = req.file.buffer;
+    const mimeType = req.file.mimetype;
+
+    console.log(`[meetingController] Uploading recording for meeting ${meeting.roomId} using StorageService. File size: ${fileBuffer.length} bytes`);
+
+    // Store in selected storage layer (Redis for temp, S3 in prod)
+    await storageService.upload(fileKey, fileBuffer, mimeType);
+
+    // If storage is persistent (local or cloud), save playback path and ownership to Meeting document
+    if (!storageService.isTemporary) {
+      const ext = mimeType.includes('wav') ? 'wav' : 'webm';
+      meeting.recordingUrl = `/uploads/recordings/${fileKey}.${ext}`;
+      // Track who recorded this meeting so only they can play it back
+      meeting.recordedBy = req.user._id;
+      await meeting.save();
+      console.log(`[meetingController] Recording url saved to DB: ${meeting.recordingUrl}, recorded by: ${req.user._id}`);
+    }
+
+    // Run async background processing: download, transcribe, summarize, clean up Redis
+    const io = req.app.get('io');
+    aiService.processRecordingAndSummary(meeting._id, fileKey, mimeType, io);
+
+    // Respond immediately with 202 Accepted
+    res.status(202).json({
+      message: 'Recording uploaded successfully. AI transcription and summary generation started in the background.',
+      fileKey,
+      recordingUrl: meeting.recordingUrl || null,
+      recordedBy: meeting.recordedBy || null
+    });
+
+  } catch (error) {
+    console.error('Error uploading recording:', error);
+    res.status(500).json({ message: 'Server error during recording upload', error: error.message });
   }
 };

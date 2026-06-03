@@ -1,4 +1,5 @@
 const express = require('express');
+const multer = require('multer');
 const {
   createMeeting,
   getMeetings,
@@ -8,10 +9,17 @@ const {
   updateMeetingNotes,
   processMeetingAI,
   summarizeMeetingChats,
+  uploadRecording,
 } = require('../controllers/meetingController');
 const { protect } = require('../middleware/authMiddleware');
 
 const router = express.Router();
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 100 * 1024 * 1024, // 100 MB max recording size limit
+  }
+});
 
 router.route('/')
   .post(protect, createMeeting)
@@ -33,4 +41,8 @@ router.route('/:id/process-ai')
 router.route('/:id/summarize-chats')
   .post(protect, summarizeMeetingChats);
 
+router.route('/:id/recording')
+  .post(protect, upload.single('recording'), uploadRecording);
+
 module.exports = router;
+

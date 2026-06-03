@@ -76,6 +76,15 @@ const meetingSchema = new mongoose.Schema({
     type: Boolean,
     default: false,
   },
+  recordingUrl: {
+    type: String,
+    default: '',
+  },
+  recordedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null,
+  },
   createdAt: {
     type: Date,
     default: Date.now,
