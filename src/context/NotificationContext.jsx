@@ -28,7 +28,7 @@ export function NotificationProvider({ children }) {
     if (user) {
       fetchNotifications()
 
-      const socket = io('http://localhost:5000', {
+      const socket = io(import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000', {
         withCredentials: true
       })
 
