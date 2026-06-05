@@ -133,6 +133,11 @@ export default function MeetingRoomPage() {
   const [localStream, setLocalStream] = useState(null)
   const socketRef = useRef(null)
   const peerConnectionsRef = useRef(new Map()) // Map of socketId -> RTCPeerConnection
+  const iceServersRef = useRef([
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' }
+  ])
   const localStreamRef = useRef(null)
   const lobbyVideoRef = useRef(null)
   const localVideoTrackRef = useRef(null)
@@ -888,6 +893,25 @@ export default function MeetingRoomPage() {
     return () => clearInterval(t)
   }, [joined])
 
+  // Fetch WebRTC ICE configurations (STUN/TURN) from backend on mount
+  useEffect(() => {
+    const fetchIceServers = async () => {
+      try {
+        const res = await fetch('/api/meetings/ice-servers')
+        if (res.ok) {
+          const data = await res.json()
+          if (data && data.iceServers) {
+            iceServersRef.current = data.iceServers
+            console.log('Successfully fetched and configured WebRTC ICE servers.')
+          }
+        }
+      } catch (err) {
+        console.error('Error fetching WebRTC ICE servers:', err)
+      }
+    }
+    fetchIceServers()
+  }, [])
+
   // ------------------ PRE-JOIN LOBBY TRACKS ------------------
 
   // Enumerate hardware devices
@@ -1026,9 +1050,7 @@ export default function MeetingRoomPage() {
 
   const createPeerConnection = (peerSocketId, peerName, peerUserId) => {
     const configuration = {
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' }
-      ]
+      iceServers: iceServersRef.current
     }
     
     const pc = new RTCPeerConnection(configuration)

@@ -10,6 +10,7 @@ const {
   processMeetingAI,
   summarizeMeetingChats,
   uploadRecording,
+  getIceServers,
 } = require('../controllers/meetingController');
 const { protect } = require('../middleware/authMiddleware');
 
@@ -24,6 +25,9 @@ const upload = multer({
 router.route('/')
   .post(protect, createMeeting)
   .get(protect, getMeetings);
+
+router.route('/ice-servers')
+  .get(protect, getIceServers);
 
 router.route('/:id')
   .get(protect, getMeetingByIdOrRoomId)

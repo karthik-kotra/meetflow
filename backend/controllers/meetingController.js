@@ -377,3 +377,51 @@ exports.uploadRecording = async (req, res) => {
     res.status(500).json({ message: 'Server error during recording upload', error: error.message });
   }
 };
+
+// @desc    Get WebRTC ICE servers (STUN/TURN config)
+// @route   GET /api/meetings/ice-servers
+// @access  Private
+exports.getIceServers = async (req, res) => {
+  try {
+    const urls = process.env.TURN_SERVER_URLS;
+    const username = process.env.TURN_SERVER_USERNAME;
+    const credential = process.env.TURN_SERVER_CREDENTIAL;
+
+    let iceServers = [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun2.l.google.com:19302' }
+    ];
+
+    if (urls) {
+      const urlList = urls.split(',').map(u => u.trim());
+      iceServers.push({
+        urls: urlList,
+        username: username || '',
+        credential: credential || ''
+      });
+    } else {
+      // Fallback: Use free public OpenRelayProject STUN/TURN servers provided by Metered.ca
+      iceServers.push(
+        {
+          urls: 'stun:openrelay.metered.ca:80'
+        },
+        {
+          urls: [
+            'turn:openrelay.metered.ca:80',
+            'turn:openrelay.metered.ca:443',
+            'turn:openrelay.metered.ca:443?transport=tcp'
+          ],
+          username: 'openrelayproject',
+          credential: 'openrelayproject'
+        }
+      );
+    }
+
+    res.status(200).json({ iceServers });
+  } catch (error) {
+    console.error('Error getting ICE servers:', error);
+    res.status(500).json({ message: 'Server error fetching ICE servers', error: error.message });
+  }
+};
+
