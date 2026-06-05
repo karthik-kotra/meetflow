@@ -2679,6 +2679,9 @@ export default function MeetingRoomPage() {
                         <Users size={14} className="text-primary/70 shrink-0" />
                         <span>{peers.length + 1} Active call members</span>
                       </div>
+                      <div className="text-[10px] text-amber-500 font-mono mt-2 pt-2 border-t border-border/40">
+                        DEBUG Backend: {import.meta.env.VITE_BACKEND_URL || 'NOT SET (localhost:5000)'}
+                      </div>
                     </div>
                   </div>
                   {meeting.description && (
