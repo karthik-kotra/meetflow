@@ -165,7 +165,7 @@ export default function Dashboard() {
           <div className="space-y-3">
             {sortedOngoingMeetings.slice(0, 3).map((m) => {
               const date = parseISO(`${m.date}T${m.time}`)
-              const meetingId = m._id || m.roomId
+              const meetingId = m.roomId || m._id
               const isJoined = joinedMeetingId === meetingId
               return (
                 <div key={meetingId} className="group bg-gradient-to-r from-primary/10 to-transparent border-2 border-primary/40 rounded-xl p-4 hover:border-primary/60 transition-all duration-200 flex items-start gap-4">

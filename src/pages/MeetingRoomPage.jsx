@@ -855,6 +855,10 @@ export default function MeetingRoomPage() {
           setMeetingError(details)
         } else {
           setMeeting(details)
+          // If the URL matches the Mongo _id, replace it with the clean roomId
+          if (details.roomId && id === details._id) {
+            navigate(`/meeting/${details.roomId}`, { replace: true })
+          }
         }
       } catch (err) {
         console.error('Error fetching meeting details:', err)
@@ -863,7 +867,7 @@ export default function MeetingRoomPage() {
       }
     }
     loadDetails()
-  }, [id, fetchMeetingDetails])
+  }, [id, fetchMeetingDetails, navigate])
 
   // Track User Status sync (in-meeting vs online)
   useEffect(() => {
