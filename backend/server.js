@@ -25,13 +25,23 @@ const notificationRoutes = require('./routes/notificationRoutes');
 const app = express();
 const server = http.createServer(app);
 
+// CORS Options to support local development and all Vercel deployments dynamically
+const allowedOrigins = ['http://localhost:5173'];
+const corsOptions = {
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin) || origin.endsWith('.vercel.app')) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  credentials: true
+};
+
 // Initialize Socket.io
 const io = new Server(server, {
-  cors: {
-    origin: 'http://localhost:5173', // Vite default port
-    methods: ['GET', 'POST'],
-    credentials: true,
-  },
+  cors: corsOptions,
 });
 
 const onlineUsers = new Map(); // Map of userId -> socketId
@@ -39,10 +49,7 @@ app.set('io', io);
 app.set('onlineUsers', onlineUsers);
 
 // Middleware
-app.use(cors({
-  origin: 'http://localhost:5173',
-  credentials: true
-}));
+app.use(cors(corsOptions));
 app.use(express.json());
 app.use(cookieParser());
 
