@@ -1104,10 +1104,10 @@ export default function MeetingRoomPage() {
       })
     } else {
       try {
-        pc.addTransceiver('audio', { direction: 'recvonly' })
-        console.log(`Configured recvonly audio transceiver for ${peerName}`)
+        pc.addTransceiver('audio', { direction: 'sendrecv' })
+        console.log(`Configured sendrecv audio transceiver for ${peerName}`)
       } catch (e) {
-        console.warn('Failed to add audio receive-only transceiver:', e)
+        console.warn('Failed to add audio sendrecv transceiver:', e)
       }
     }
 
@@ -1118,10 +1118,10 @@ export default function MeetingRoomPage() {
       })
     } else {
       try {
-        pc.addTransceiver('video', { direction: 'recvonly' })
-        console.log(`Configured recvonly video transceiver for ${peerName}`)
+        pc.addTransceiver('video', { direction: 'sendrecv' })
+        console.log(`Configured sendrecv video transceiver for ${peerName}`)
       } catch (e) {
-        console.warn('Failed to add video receive-only transceiver:', e)
+        console.warn('Failed to add video sendrecv transceiver:', e)
       }
     }
 
@@ -1156,18 +1156,34 @@ export default function MeetingRoomPage() {
     // Bind remote tracks to the layout grid safely across all browsers
     pc.ontrack = (event) => {
       console.log(`Track received from peer ${peerName}:`, event.track)
-      setPeers(prev => prev.map(p => {
-        if (p.socketId === peerSocketId) {
-          const existingStream = p.stream || new MediaStream()
-          if (!existingStream.getTracks().find(t => t.id === event.track.id)) {
-            existingStream.addTrack(event.track)
-          }
-          // Clone the stream to a new reference to trigger React's dependency checks
-          const newStream = new MediaStream(existingStream.getTracks())
-          return { ...p, stream: newStream }
+      setPeers(prev => {
+        const peerExists = prev.some(p => p.socketId === peerSocketId)
+        if (peerExists) {
+          return prev.map(p => {
+            if (p.socketId === peerSocketId) {
+              const existingStream = p.stream || new MediaStream()
+              if (!existingStream.getTracks().find(t => t.id === event.track.id)) {
+                existingStream.addTrack(event.track)
+              }
+              // Clone the stream to a new reference to trigger React's dependency checks
+              const newStream = new MediaStream(existingStream.getTracks())
+              return { ...p, stream: newStream }
+            }
+            return p
+          })
+        } else {
+          // Add peer immediately with the stream if not yet present in the state
+          const newStream = new MediaStream([event.track])
+          return [...prev, {
+            socketId: peerSocketId,
+            userId: peerUserId,
+            name: peerName,
+            mic: true,
+            cam: true,
+            stream: newStream
+          }]
         }
-        return p
-      }))
+      })
     }
     
     pc.onconnectionstatechange = () => {
@@ -1531,15 +1547,8 @@ export default function MeetingRoomPage() {
         )
         
         if (videoTransceiver) {
-          if (videoTrack) {
-            await videoTransceiver.sender.replaceTrack(videoTrack)
-            videoTransceiver.direction = 'sendrecv'
-            console.log(`Replaced video track for peer ${socketId} and set direction to sendrecv`)
-          } else {
-            await videoTransceiver.sender.replaceTrack(null)
-            videoTransceiver.direction = 'recvonly'
-            console.log(`Removed video track for peer ${socketId} and set direction to recvonly`)
-          }
+          await videoTransceiver.sender.replaceTrack(videoTrack)
+          console.log(`Replaced video track for peer ${socketId}`)
         } else if (videoTrack) {
           pc.addTrack(videoTrack, localStreamRef.current)
           console.log(`Added video track to new transceiver/sender for peer ${socketId}`)
@@ -1563,15 +1572,8 @@ export default function MeetingRoomPage() {
         )
         
         if (audioTransceiver) {
-          if (audioTrack) {
-            await audioTransceiver.sender.replaceTrack(audioTrack)
-            audioTransceiver.direction = 'sendrecv'
-            console.log(`Replaced audio track for peer ${socketId} and set direction to sendrecv`)
-          } else {
-            await audioTransceiver.sender.replaceTrack(null)
-            audioTransceiver.direction = 'recvonly'
-            console.log(`Removed audio track for peer ${socketId} and set direction to recvonly`)
-          }
+          await audioTransceiver.sender.replaceTrack(audioTrack)
+          console.log(`Replaced audio track for peer ${socketId}`)
         } else if (audioTrack) {
           pc.addTrack(audioTrack, localStreamRef.current)
           console.log(`Added audio track to new transceiver/sender for peer ${socketId}`)
