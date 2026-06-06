@@ -2,6 +2,11 @@ import { createContext, useContext, useState, useEffect, useCallback, useRef } f
 import { useAuth } from '@/context/AuthContext';
 import { io } from 'socket.io-client';
 
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 
+  (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1'
+    ? 'https://meetflow-backend-iqj4.onrender.com'
+    : 'http://localhost:5000')
+
 const ChatContext = createContext(null);
 
 // Synthesize a premium double-tone chime sound
@@ -100,7 +105,7 @@ export function ChatProvider({ children }) {
     fetchContacts();
 
     // Setup Socket
-    socketRef.current = io(import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000', {
+    socketRef.current = io(BACKEND_URL, {
       withCredentials: true,
     });
 

@@ -16,6 +16,11 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { format, parseISO } from 'date-fns'
 import { io } from 'socket.io-client'
 
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 
+  (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1'
+    ? 'https://meetflow-backend-iqj4.onrender.com'
+    : 'http://localhost:5000')
+
 // Video Renderer Component
 function VideoView({ stream, name, muted, isLocal, isVideoOn, isAudioOn, isHandRaised, mirror = false, isPinned = false, onTogglePin, lastTranscript }) {
   const videoRef = useRef(null)
@@ -1213,7 +1218,7 @@ export default function MeetingRoomPage() {
 
     const activeMeeting = meetingRef.current
 
-    const socket = io(import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000', {
+    const socket = io(BACKEND_URL, {
       withCredentials: true
     })
     socketRef.current = socket
@@ -2767,7 +2772,7 @@ export default function MeetingRoomPage() {
                         <span>{peers.length + 1} Active call members</span>
                       </div>
                       <div className="text-[10px] text-amber-500 font-mono mt-2 pt-2 border-t border-border/40">
-                        DEBUG Backend: {import.meta.env.VITE_BACKEND_URL || 'NOT SET (localhost:5000)'}
+                        DEBUG Backend: {BACKEND_URL}
                       </div>
                     </div>
                   </div>
