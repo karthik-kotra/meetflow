@@ -133,6 +133,7 @@ export default function MeetingRoomPage() {
   const [localStream, setLocalStream] = useState(null)
   const socketRef = useRef(null)
   const peerConnectionsRef = useRef(new Map()) // Map of socketId -> RTCPeerConnection
+  const iceCandidatesQueueRef = useRef(new Map()) // Map of socketId -> Array of early ICE candidates
   const iceServersRef = useRef([
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
@@ -142,6 +143,11 @@ export default function MeetingRoomPage() {
   const lobbyVideoRef = useRef(null)
   const localVideoTrackRef = useRef(null)
   const peersRef = useRef([])
+  const meetingRef = useRef(meeting)
+
+  useEffect(() => {
+    meetingRef.current = meeting
+  }, [meeting])
 
   useEffect(() => {
     localStreamRef.current = localStream
@@ -776,7 +782,7 @@ export default function MeetingRoomPage() {
 
   // Client-side Web Speech Recognition
   useEffect(() => {
-    if (!joined || !mic || !meeting || !socketRef.current || !aiTranscribe) return;
+    if (!joined || !mic || !meetingRef.current || !socketRef.current || !aiTranscribe) return;
 
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
@@ -795,7 +801,7 @@ export default function MeetingRoomPage() {
         const transcriptText = result[0].transcript.trim();
         if (transcriptText && socketRef.current) {
           socketRef.current.emit('meeting_transcription_segment', {
-            roomId: meeting.roomId,
+            roomId: meetingRef.current.roomId,
             senderId: user.id,
             senderName: user.name,
             text: transcriptText
@@ -833,7 +839,7 @@ export default function MeetingRoomPage() {
         // Safe ignore
       }
     };
-  }, [joined, mic, meeting, aiTranscribe]);
+  }, [joined, mic, aiTranscribe]);
 
   useEffect(() => {
     if (tab === 'chat') {
@@ -897,20 +903,28 @@ export default function MeetingRoomPage() {
   useEffect(() => {
     const fetchIceServers = async () => {
       try {
-        const res = await fetch('/api/meetings/ice-servers')
+        const headers = {}
+        if (user && user.token) {
+          headers['Authorization'] = `Bearer ${user.token}`
+        }
+        const res = await fetch('/api/meetings/ice-servers', { headers })
         if (res.ok) {
           const data = await res.json()
           if (data && data.iceServers) {
             iceServersRef.current = data.iceServers
             console.log('Successfully fetched and configured WebRTC ICE servers.')
           }
+        } else {
+          console.error('Failed to fetch WebRTC ICE servers:', res.status, res.statusText)
         }
       } catch (err) {
         console.error('Error fetching WebRTC ICE servers:', err)
       }
     }
-    fetchIceServers()
-  }, [])
+    if (user) {
+      fetchIceServers()
+    }
+  }, [user])
 
   // ------------------ PRE-JOIN LOBBY TRACKS ------------------
 
@@ -1056,6 +1070,11 @@ export default function MeetingRoomPage() {
     const pc = new RTCPeerConnection(configuration)
     peerConnectionsRef.current.set(peerSocketId, pc)
     
+    // Initialize ICE candidates queue with any early candidates that arrived before the connection was created
+    const earlyCandidates = iceCandidatesQueueRef.current.get(peerSocketId) || []
+    pc.iceQueue = [...earlyCandidates]
+    iceCandidatesQueueRef.current.delete(peerSocketId)
+    
     // Bind local tracks or configure transceivers for audio and video
     const stream = localStreamRef.current
     const hasAudio = stream && stream.getAudioTracks().length > 0
@@ -1174,7 +1193,9 @@ export default function MeetingRoomPage() {
 
   // Setup WebRTC and Sockets connection once joining call room
   useEffect(() => {
-    if (!joined || !meeting) return
+    if (!joined || !meetingRef.current) return
+
+    const activeMeeting = meetingRef.current
 
     const socket = io(import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000', {
       withCredentials: true
@@ -1183,7 +1204,7 @@ export default function MeetingRoomPage() {
 
     const loadChatHistory = async () => {
       try {
-        const res = await fetch('/api/meeting-chat/' + meeting.roomId + '/messages')
+        const res = await fetch('/api/meeting-chat/' + activeMeeting.roomId + '/messages')
         if (res.ok) {
           const data = await res.json()
           const filteredData = data.filter(m => m.type !== 'transcript')
@@ -1275,7 +1296,7 @@ export default function MeetingRoomPage() {
 
     // Emit connection event
     socket.emit('join_meeting', {
-      roomId: meeting.roomId,
+      roomId: activeMeeting.roomId,
       userId: user.id,
       name: user.name,
       mic,
@@ -1326,6 +1347,20 @@ export default function MeetingRoomPage() {
       
       try {
         await pc.setRemoteDescription(new RTCSessionDescription(offer))
+        
+        // Process any queued candidates now that remote description is set
+        if (pc.iceQueue && pc.iceQueue.length > 0) {
+          console.log(`Processing ${pc.iceQueue.length} queued ICE candidates from offer for ${senderName}`)
+          for (const cand of pc.iceQueue) {
+            try {
+              await pc.addIceCandidate(new RTCIceCandidate(cand))
+            } catch (err) {
+              console.warn('Error adding queued ICE candidate after offer:', err)
+            }
+          }
+          pc.iceQueue = []
+        }
+
         const answer = await pc.createAnswer()
         await pc.setLocalDescription(answer)
         
@@ -1357,6 +1392,19 @@ export default function MeetingRoomPage() {
       if (pc) {
         try {
           await pc.setRemoteDescription(new RTCSessionDescription(answer))
+          
+          // Process any queued candidates now that remote description is set
+          if (pc.iceQueue && pc.iceQueue.length > 0) {
+            console.log(`Processing ${pc.iceQueue.length} queued ICE candidates from answer`)
+            for (const cand of pc.iceQueue) {
+              try {
+                await pc.addIceCandidate(new RTCIceCandidate(cand))
+              } catch (err) {
+                console.warn('Error adding queued ICE candidate after answer:', err)
+              }
+            }
+            pc.iceQueue = []
+          }
         } catch (err) {
           console.error('Error setting remote answer:', err)
         }
@@ -1368,10 +1416,25 @@ export default function MeetingRoomPage() {
       const pc = peerConnectionsRef.current.get(senderSocketId)
       if (pc) {
         try {
-          await pc.addIceCandidate(new RTCIceCandidate(candidate))
+          if (pc.remoteDescription && pc.remoteDescription.type) {
+            await pc.addIceCandidate(new RTCIceCandidate(candidate))
+          } else {
+            if (!pc.iceQueue) {
+              pc.iceQueue = []
+            }
+            pc.iceQueue.push(candidate)
+            console.log(`Queued ICE candidate for ${senderSocketId} (remoteDesc not set yet)`)
+          }
         } catch (err) {
           console.error('Error attaching remote ICE candidate:', err)
         }
+      } else {
+        // Queue candidate globally before RTCPeerConnection is created
+        if (!iceCandidatesQueueRef.current.has(senderSocketId)) {
+          iceCandidatesQueueRef.current.set(senderSocketId, [])
+        }
+        iceCandidatesQueueRef.current.get(senderSocketId).push(candidate)
+        console.log(`Queued ICE candidate globally for ${senderSocketId} (connection not created yet)`)
       }
     })
 
@@ -1418,8 +1481,7 @@ export default function MeetingRoomPage() {
     return () => {
       cleanupConnections()
     }
-    // eslint-disable-next-line
-  }, [joined, meeting])
+  }, [joined])
 
   // Track termination cleanup
   const cleanupConnections = () => {
@@ -1436,13 +1498,14 @@ export default function MeetingRoomPage() {
     }
 
     if (socketRef.current) {
-      socketRef.current.emit('leave_meeting', { roomId: meeting?.roomId || id })
+      socketRef.current.emit('leave_meeting', { roomId: meetingRef.current?.roomId || id })
       socketRef.current.disconnect()
       socketRef.current = null
     }
     
     peerConnectionsRef.current.forEach(pc => pc.close())
     peerConnectionsRef.current.clear()
+    iceCandidatesQueueRef.current.clear()
     
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach(t => t.stop())

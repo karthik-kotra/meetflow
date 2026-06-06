@@ -35,7 +35,7 @@ export function MeetingsProvider({ children }) {
     }
   }, [user, fetchMeetings])
 
-  const createMeeting = async (data) => {
+  const createMeeting = useCallback(async (data) => {
     try {
       const res = await fetch('/api/meetings', {
         method: 'POST',
@@ -51,15 +51,15 @@ export function MeetingsProvider({ children }) {
       console.error('Failed to create meeting:', error)
     }
     return null
-  }
+  }, [])
 
   // Find a meeting locally by _id or roomId
-  const getMeeting = (id) => {
+  const getMeeting = useCallback((id) => {
     return meetings.find((m) => m._id === id || m.roomId === id || m.id === id)
-  }
+  }, [meetings])
 
   // Asynchronously fetch details from database by ID or Room ID
-  const fetchMeetingDetails = async (id) => {
+  const fetchMeetingDetails = useCallback(async (id) => {
     try {
       const res = await fetch(`/api/meetings/${id}`)
       if (res.ok) {
@@ -72,9 +72,9 @@ export function MeetingsProvider({ children }) {
       console.error('Failed to fetch meeting details:', error)
     }
     return null
-  }
+  }, [])
 
-  const deleteMeeting = async (id) => {
+  const deleteMeeting = useCallback(async (id) => {
     if (!id) return
     try {
       const res = await fetch(`/api/meetings/${id}`, {
@@ -87,7 +87,7 @@ export function MeetingsProvider({ children }) {
       // Fallback
       setMeetings((prev) => prev.filter((m) => m._id !== id && m.id !== id))
     }
-  }
+  }, [])
 
   // Get ongoing meetings (meetings scheduled for today)
   const getOngoingMeetings = useMemo(() => {
@@ -120,7 +120,7 @@ export function MeetingsProvider({ children }) {
     })
   }, [meetings])
 
-  const updateMeetingStatus = async (id, status) => {
+  const updateMeetingStatus = useCallback(async (id, status) => {
     try {
       const res = await fetch(`/api/meetings/${id}/status`, {
         method: 'PATCH',
@@ -136,9 +136,9 @@ export function MeetingsProvider({ children }) {
       console.error('Failed to update meeting status:', error)
     }
     return null
-  }
+  }, [])
 
-  const processMeetingAI = async (id) => {
+  const processMeetingAI = useCallback(async (id) => {
     try {
       const res = await fetch(`/api/meetings/${id}/process-ai`, {
         method: 'POST',
@@ -153,9 +153,9 @@ export function MeetingsProvider({ children }) {
       console.error('Failed to process meeting AI:', error)
     }
     return null
-  }
+  }, [])
 
-  const saveMeetingNotes = async (id, notes) => {
+  const saveMeetingNotes = useCallback(async (id, notes) => {
     try {
       const res = await fetch(`/api/meetings/${id}/notes`, {
         method: 'PATCH',
@@ -171,7 +171,7 @@ export function MeetingsProvider({ children }) {
       console.error('Failed to save meeting notes:', error)
     }
     return null
-  }
+  }, [])
 
   return (
     <MeetingsContext.Provider 
